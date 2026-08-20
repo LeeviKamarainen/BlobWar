@@ -1,0 +1,24 @@
+{
+  "name": "blobwar-3d",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "3D turn-based artillery game in the spirit of Worms, built with three.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "serve": "node server/index.js",
+    "online": "npm run build && node server/index.js",
+    "tunnel": "cloudflared tunnel --url http://localhost:3000"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
+  }
+}
