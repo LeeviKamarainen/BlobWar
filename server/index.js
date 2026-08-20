@@ -15,6 +15,7 @@ import { existsSync } from 'node:fs';
 import { MAPS, DEFAULT_MAP } from '../src/maps.js';
 import { WEAPON_ORDER, CORE_WEAPONS } from '../src/weapons.js';
 import { CFG } from '../src/config.js';
+import { CONTROL_DIM, CUSTOM_MAP_ID } from '../src/customMap.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -29,7 +30,8 @@ const DEFAULT_GRAVITY = CFG.gravityPresets.find((p) => p.id === CFG.defaultGravi
 /** The server doesn't simulate, but a malicious/odd client could still send
  *  garbage settings, so match-shape fields get the same validation the menu
  *  UI already enforces on itself. */
-function sanitizeMapId(id) {
+function sanitizeMapId(id, hasCustomMap) {
+  if (id === CUSTOM_MAP_ID) return hasCustomMap ? CUSTOM_MAP_ID : DEFAULT_MAP;
   return typeof id === 'string' && MAPS[id] ? id : DEFAULT_MAP;
 }
 function sanitizeGravity(g) {
@@ -41,6 +43,17 @@ function sanitizeWeapons(list) {
   // even empty — is a real restriction and is kept as given.
   if (!Array.isArray(list)) return null;
   return list.filter((id) => TOGGLEABLE_WEAPONS.has(id));
+}
+/** The host's hand-painted map, relayed whole so every client builds the
+ *  identical terrain — nobody else has it in their own localStorage. */
+function sanitizeCustomMap(cm) {
+  if (!cm || !Array.isArray(cm.heights) || cm.heights.length !== CONTROL_DIM * CONTROL_DIM) return null;
+  return {
+    name: typeof cm.name === 'string' ? cm.name.slice(0, 24) : 'Custom',
+    controlDim: CONTROL_DIM,
+    noiseAmount: Math.max(0, Math.min(1, Number(cm.noiseAmount) || 0)),
+    heights: cm.heights.map((v) => Math.max(0, Math.min(1, Number(v) || 0))),
+  };
 }
 
 const app = express();
@@ -75,6 +88,8 @@ function publicRoom(room) {
     mapId: room.mapId,
     gravity: room.gravity,
     weapons: room.weapons,
+    // customMap deliberately isn't here: it's tens of KB and only needed once,
+    // by the 'start' payload, not on every lobby broadcast.
     players: room.players.map((p) => ({
       slot: p.slot,
       name: p.name,
@@ -124,15 +139,17 @@ io.on('connection', (socket) => {
     me = null;
   };
 
-  socket.on('create', ({ name, teamCount, mapId, gravity, weapons }, ack) => {
+  socket.on('create', ({ name, teamCount, mapId, gravity, weapons, customMap }, ack) => {
     const code = makeCode();
+    const sanitizedCustomMap = mapId === CUSTOM_MAP_ID ? sanitizeCustomMap(customMap) : null;
     room = {
       code,
       seed: (Math.random() * 1e9) | 0,
       teamCount: Math.min(MAX_TEAMS, Math.max(2, teamCount || 2)),
-      mapId: sanitizeMapId(mapId),
+      mapId: sanitizeMapId(mapId, !!sanitizedCustomMap),
       gravity: sanitizeGravity(gravity),
       weapons: sanitizeWeapons(weapons),
+      customMap: sanitizedCustomMap,
       players: [],
       started: false,
       hostId: socket.id,
@@ -188,6 +205,7 @@ io.on('connection', (socket) => {
       mapId: room.mapId,
       gravity: room.gravity,
       weapons: room.weapons,
+      customMap: room.customMap,
     });
     console.log(`[blobwar] room ${room.code} started with ${room.players.length} players`);
   });

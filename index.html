@@ -257,7 +257,7 @@
       .seg button.on { background: rgba(255,209,102,0.2); border-color: var(--accent); color: #fff; }
 
       .setup label { align-self: start; padding-top: 6px; }
-      .mapGrid { display: flex; flex-wrap: wrap; gap: 8px; max-width: 380px; }
+      .mapGrid { display: flex; flex-wrap: wrap; gap: 8px; max-width: 460px; }
       .mapCard {
         display: flex; flex-direction: column; align-items: center; gap: 5px;
         width: 84px; padding: 6px; border-radius: 10px; cursor: pointer;
@@ -270,6 +270,43 @@
         object-fit: cover; border: 1px solid rgba(0,0,0,0.35);
       }
       .mapCard span { font-size: 11px; font-weight: 600; letter-spacing: 0; color: var(--text); }
+      .mapCard.custom { cursor: default; }
+      .mapCard.dashed { border-style: dashed; justify-content: center; cursor: pointer; }
+      .mapCard .mapPlus {
+        font-size: 26px; color: var(--muted); line-height: 1; width: 100%; aspect-ratio: 1;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .mapCard .mapSelect { background: none; border: none; box-shadow: none; padding: 0; width: 100%; cursor: pointer; }
+      .mapCard .mapSelect img {
+        width: 100%; aspect-ratio: 1; border-radius: 6px; object-fit: cover; display: block;
+        border: 1px solid rgba(0,0,0,0.35);
+      }
+      .mapCard .mapEdit {
+        font-size: 10px; padding: 3px 8px; border-radius: 6px; background: rgba(255,255,255,0.1);
+        border: 1px solid var(--edge); box-shadow: none; color: var(--text); cursor: pointer;
+      }
+      .mapCard .mapEdit:hover { background: rgba(255,255,255,0.2); transform: none; }
+
+      /* ---- map editor ---- */
+      .card.wide { max-width: 900px; }
+      .editorLayout { display: flex; gap: 20px; align-items: flex-start; justify-content: center; margin: 16px 0; flex-wrap: wrap; }
+      #paintCanvas { border-radius: 12px; border: 1px solid var(--edge); cursor: crosshair; touch-action: none; background: #14202c; }
+      .editorPanel { display: flex; flex-direction: column; gap: 7px; width: 220px; text-align: left; }
+      .editorPanel label {
+        font-size: 11px; letter-spacing: 1px; color: var(--muted); text-transform: uppercase;
+        display: flex; justify-content: space-between; align-self: auto; padding-top: 0;
+      }
+      .editorPanel input[type="range"] { width: 100%; accent-color: var(--accent); }
+      .editorPanel input:not([type="range"]) {
+        font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 7px; width: 100%;
+        background: rgba(0,0,0,0.4); border: 1px solid var(--edge); color: var(--text); box-sizing: border-box;
+      }
+      .editorPanel .seg { flex-wrap: wrap; }
+      .editorPanel .seg button { padding: 6px 9px; }
+      .editorPreviewImg {
+        width: 100%; aspect-ratio: 1; border-radius: 8px; border: 1px solid var(--edge);
+        object-fit: cover; background: #14202c; display: block;
+      }
       .wgrid { display: flex; flex-wrap: wrap; gap: 5px; max-width: 360px; }
       .wchip {
         font: inherit; font-size: 12px; font-weight: 600; letter-spacing: 0; padding: 6px 10px;

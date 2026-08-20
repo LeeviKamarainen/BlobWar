@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CFG } from './config.js';
-import { createNoise2D, fbm, smoothstep, clamp, mulberry32 } from './noise.js';
+import { createNoise2D, fbm, smoothstep, clamp, mulberry32, bilinear } from './noise.js';
 import { MAPS, DEFAULT_MAP } from './maps.js';
 
 /**
@@ -52,6 +52,8 @@ export class Terrain {
   // --- generation -----------------------------------------------------------
 
   generate(seed) {
+    if (this.mapDef.custom) return this.generateCustom(seed);
+
     const m = this.mapDef;
     const noise = createNoise2D(seed);
     const ridgeNoise = createNoise2D(seed + 7717);
@@ -78,6 +80,50 @@ export class Terrain {
         let h = maxHeight * m.heightScale * Math.pow(n, m.heightPow) * island + m.baseOffset;
 
         // Flatten the very deep water so the sea floor reads as a floor.
+        if (h < seaFloor) h = seaFloor + (h - seaFloor) * 0.15;
+
+        this.heights[iz * this.dim + ix] = h;
+      }
+    }
+
+    this.rebuildAll();
+  }
+
+  /**
+   * Hand-painted map: `mapDef.controlHeights` is a `controlDim × controlDim`
+   * grid of 0..1 values authored in the map editor. Bilinear-sampled up to the
+   * full heightmap resolution as the base shape, then a procedural noise layer
+   * — the same kind every other map uses, scaled by `mapDef.noiseAmount` — is
+   * blended on top. That's what keeps two matches on the same painted map from
+   * looking identical, exactly like the formula-driven presets vary by seed.
+   */
+  generateCustom(seed) {
+    const m = this.mapDef;
+    const noise = createNoise2D(seed);
+    const { maxHeight, seaFloor } = CFG.terrain;
+    const cdim = m.controlDim;
+    const grid = m.controlHeights;
+    const amount = m.noiseAmount ?? 0.3;
+
+    for (let iz = 0; iz < this.dim; iz++) {
+      for (let ix = 0; ix < this.dim; ix++) {
+        const x = ix * this.step - this.half;
+        const z = iz * this.step - this.half;
+
+        const u = (ix / this.seg) * (cdim - 1);
+        const v = (iz / this.seg) * (cdim - 1);
+        const base = bilinear(grid, cdim, u, v);
+
+        let n = fbm(noise, x * 0.02, z * 0.02, 4);
+        n = n * 0.5 + 0.5;
+
+        const h01 = clamp(base + (n - 0.5) * amount, 0, 1);
+        // A power curve, same trick the formula-driven presets use: it keeps
+        // "Mid" reading as a walkable green plain and reserves snow for
+        // genuinely high paint, instead of a linear map turning half the
+        // canvas white the moment you paint above the middle swatch.
+        let h = Math.pow(h01, 1.6) * maxHeight - 8;
+
         if (h < seaFloor) h = seaFloor + (h - seaFloor) * 0.15;
 
         this.heights[iz * this.dim + ix] = h;

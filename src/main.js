@@ -177,13 +177,22 @@ const net = new Net();
 const menu = new Menu({
   overlay: document.getElementById('overlay'),
   net,
-  onStartLocal: ({ teamCount, aiTeams, mapId, gravity, weapons }) => {
+  onStartLocal: ({ teamCount, aiTeams, mapId, gravity, weapons, customMap }) => {
     audio.resume();
     game.net = null;
-    game.start({ mode: 'local', teamCount, aiTeams, localTeams: null, mapId, gravity, enabledWeapons: weapons });
+    game.start({
+      mode: 'local',
+      teamCount,
+      aiTeams,
+      localTeams: null,
+      mapId,
+      gravity,
+      enabledWeapons: weapons,
+      customMap,
+    });
     menu.hide();
   },
-  onStartOnline: ({ seed, teamCount, players, mapId, gravity, weapons }) => {
+  onStartOnline: ({ seed, teamCount, players, mapId, gravity, weapons, customMap }) => {
     audio.resume();
     game.net = net.session(game);
     game.start({
@@ -196,6 +205,7 @@ const menu = new Menu({
       mapId,
       gravity,
       enabledWeapons: weapons,
+      customMap,
     });
     menu.hide();
   },

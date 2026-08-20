@@ -79,3 +79,16 @@ export function smoothstep(edge0, edge1, x) {
 export function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
 }
+
+/** Bilinear lookup into a flat `dim × dim` grid at fractional cell coords. */
+export function bilinear(grid, dim, u, v) {
+  const x0 = Math.floor(u);
+  const z0 = Math.floor(v);
+  const x1 = Math.min(dim - 1, x0 + 1);
+  const z1 = Math.min(dim - 1, z0 + 1);
+  const fx = u - x0;
+  const fz = v - z0;
+  const a = grid[z0 * dim + x0] + (grid[z0 * dim + x1] - grid[z0 * dim + x0]) * fx;
+  const b = grid[z1 * dim + x0] + (grid[z1 * dim + x1] - grid[z1 * dim + x0]) * fx;
+  return a + (b - a) * fz;
+}

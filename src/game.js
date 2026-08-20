@@ -3,6 +3,7 @@ import { CFG } from './config.js';
 import { WEAPONS, WEAPON_ORDER, QUICK_SLOTS, startingAmmo, practiceAmmo } from './weapons.js';
 import { Terrain } from './terrain.js';
 import { MAPS, DEFAULT_MAP } from './maps.js';
+import { CUSTOM_MAP_ID, customMapDef } from './customMap.js';
 import { Blob, separateBlobs } from './blob.js';
 import { Projectile, simulateTrajectory } from './projectile.js';
 import { Mine } from './mine.js';
@@ -73,7 +74,10 @@ export class Game {
    *   aiTeams      team indices played by the computer
    *   localTeams   team indices this machine controls (null = all non-AI teams)
    *   labels       optional per-team display names (online player names)
-   *   mapId        key into MAPS (default: DEFAULT_MAP)
+   *   mapId        key into MAPS, or 'custom' (default: DEFAULT_MAP)
+   *   customMap    { name, noiseAmount, heights } — required when mapId is 'custom';
+   *                the caller resolves this (from localStorage locally, or from the
+   *                host's relayed settings online) since Game doesn't touch storage
    *   gravity      numeric override for CFG.physics.gravity
    *   enabledWeapons  array of extra weapon ids allowed beyond the core two
    *                   (null/omitted = every weapon)
@@ -87,6 +91,7 @@ export class Game {
       labels = null,
       mode = 'local',
       mapId = DEFAULT_MAP,
+      customMap = null,
       gravity = CFG.gravityPresets.find((p) => p.id === CFG.defaultGravityPreset).value,
       enabledWeapons = null,
     } = opts;
@@ -109,7 +114,9 @@ export class Game {
     const count = this.practice ? 1 : clamp(teamCount, 2, CFG.teams.length);
     const perTeam = opts.blobsPerTeam ?? (this.practice ? 1 : CFG.blobsFor(count));
 
-    this.terrain = new Terrain(seed, MAPS[mapId] ?? MAPS[DEFAULT_MAP]);
+    const mapDef =
+      mapId === CUSTOM_MAP_ID && customMap ? customMapDef(customMap) : (MAPS[mapId] ?? MAPS[DEFAULT_MAP]);
+    this.terrain = new Terrain(seed, mapDef);
     this.scene.add(this.terrain.mesh);
 
     if (!this.rig) this.rig = new CameraRig(this.camera, this.terrain);
@@ -262,6 +269,7 @@ export class Game {
       } else {
         this.charging = true;
         this.power = CFG.shot.minPower;
+        this.chargeDir = 1;
       }
     });
     i.onRelease('space', () => {
@@ -1306,8 +1314,16 @@ export class Game {
       // with you even when you had no intention of aiming yet.
       if (WEAPONS[this.selectedWeapon].category === 'gun' && this.aiming) this.rig.aimYaw = blob.facing;
       if (this.charging) {
-        this.power = Math.min(CFG.shot.maxPower, this.power + CFG.shot.chargeRate * dt);
-        if (this.power >= CFG.shot.maxPower) this.fire();
+        // Bounces between min and max instead of maxing out and auto-firing —
+        // release has to be timed, same as the arc/impact preview it drives.
+        this.power += CFG.shot.chargeRate * dt * this.chargeDir;
+        if (this.power >= CFG.shot.maxPower) {
+          this.power = CFG.shot.maxPower;
+          this.chargeDir = -1;
+        } else if (this.power <= CFG.shot.minPower) {
+          this.power = CFG.shot.minPower;
+          this.chargeDir = 1;
+        }
       }
     } else {
       // Somebody else's turn: their blob is driven by the pose stream, and our

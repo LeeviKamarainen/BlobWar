@@ -59,7 +59,7 @@ over `http://192.168.x.x:3000` is fine as-is, since an insecure origin may use `
 | Aim | drag with the left mouse button — horizontal turns, vertical raises the shot |
 | Free look | drag with the right mouse button, `C` recenters |
 | Zoom | mouse wheel |
-| Fire | hold `Space` to build power, release to launch (maxing out fires automatically) |
+| Fire | hold `Space` to charge — power bounces between min and max — release to launch |
 | Armory | `Tab` opens the weapon menu · `Q`/`E` cycle · `1`–`9` quick slots |
 | Map | `M` opens the full map · `Tab` swaps top-down for 3D orbit |
 | Skip turn | `N` |
@@ -101,6 +101,16 @@ Both setup screens also pick the **map** (four terrain presets — Archipelago, 
 Flatlands, Atoll — see `src/maps.js`), **gravity** (Low/Normal/High), and which
 **weapons** are in play; Bazooka and Grenade have infinite ammo and can't be turned off.
 Online, only the host's choices matter — joining a room just plays whatever they picked.
+
+The map picker's fifth slot is a **map editor**: paint a heightmap by hand — five
+brush heights from open sea to snowy peak, a brush size, a "randomize" button that
+drops in a fresh procedural island to start from — and every match still layers its
+own random noise on top at the strength you set, so no two playthroughs of a
+hand-painted map look identical. One map is saved locally at a time (edit or replace
+it any time from its card); playing it online sends the painted heightmap to every
+guest so the terrain matches exactly. See `src/customMap.js` (storage + the
+Terrain-consumable definition) and `src/mapEditorCanvas.js` (the brush and paint-canvas
+rendering).
 
 **Practice Range**, on the title screen, drops you alone onto a flat, wide-open version
 of the island with every weapon unlocked and unlimited ammo. There's no opponent, no
@@ -196,6 +206,9 @@ src/
   weapons.js     the weapon registry — all sixteen, as data
   terrain.js     heightmap island: generation, sampling, and crater carving
   maps.js        map presets (terrain-shape params) the setup menu picks from
+  customMap.js   the one hand-painted map: storage, and its Terrain definition
+  mapEditorCanvas.js  paint-brush math and the editor's paint-canvas rendering
+  heightmapImage.js   shared band+hillshade colouring for the minimap and map thumbnails
   blob.js        blob entity — walking, ballistics, health, face and name label
   projectile.js  shots in flight + the headless trajectory integrator
   mine.js        planted mines, which outlive the turn that placed them

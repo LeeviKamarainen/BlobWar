@@ -1,7 +1,17 @@
 import { CFG } from './config.js';
 import { MAPS, MAP_ORDER, DEFAULT_MAP } from './maps.js';
-import { mapPreviewUrl } from './mapPreview.js';
+import { mapPreviewUrl, renderCustomPreview, invalidateMapPreview } from './mapPreview.js';
 import { WEAPONS, WEAPON_ORDER, CORE_WEAPONS } from './weapons.js';
+import {
+  CONTROL_DIM,
+  CUSTOM_MAP_ID,
+  loadCustomMap,
+  saveCustomMap,
+  deleteCustomMap,
+  blankControlGrid,
+  customMapDef,
+} from './customMap.js';
+import { paintBrush, randomizeControlGrid, drawControlGrid } from './mapEditorCanvas.js';
 
 /**
  * Front end: title, local setup, online host/join, lobby, controls reference and
@@ -44,6 +54,7 @@ export class Menu {
   // --- plumbing -------------------------------------------------------------
 
   show(screen, data = {}) {
+    if (this.screen === 'mapEditor' && screen !== 'mapEditor') this.teardownEditor();
     this.screen = screen;
     this.data = data;
     this.visible = true;
@@ -68,7 +79,8 @@ export class Menu {
   render() {
     const build = this[`screen_${this.screen}`];
     if (!build) return;
-    this.overlay.innerHTML = `<div class="card panel">${build.call(this)}</div>`;
+    const wide = this.screen === 'mapEditor' ? ' wide' : '';
+    this.overlay.innerHTML = `<div class="card panel${wide}">${build.call(this)}</div>`;
     this[`wire_${this.screen}`]?.call(this);
     // Shared: any element with data-go navigates to that screen.
     for (const el of this.overlay.querySelectorAll('[data-go]')) {
@@ -140,7 +152,7 @@ export class Menu {
         <label>Weapons</label>
         <div class="wgrid" id="wepGrid">${this.weaponChips()}</div>
       </div>
-      <p class="fine" id="mapDesc">${escapeHtml(MAPS[this.mapId].desc)}</p>
+      <p class="fine" id="mapDesc">${escapeHtml(this.mapDescText())}</p>
       <p class="fine" id="localNote"></p>
       <div class="modes">
         <button id="go">START</button>
@@ -165,10 +177,7 @@ export class Menu {
       this.opponents = v;
       this.render();
     });
-    this.segWire('#segMap', (v) => {
-      this.mapId = v;
-      this.render();
-    });
+    this.wireMapGrid('#segMap');
     this.segWire('#segGrav', (v) => {
       this.gravityId = v;
       this.render();
@@ -184,6 +193,7 @@ export class Menu {
         mapId: this.mapId,
         gravity: this.gravityValue(),
         weapons: this.enabledWeaponList(),
+        customMap: this.mapId === CUSTOM_MAP_ID ? loadCustomMap() : null,
       });
     };
   }
@@ -220,10 +230,7 @@ export class Menu {
       this.teamCount = +v;
       this.render();
     });
-    this.segWire('#segMap', (v) => {
-      this.mapId = v;
-      this.render();
-    });
+    this.wireMapGrid('#segMap');
     this.segWire('#segGrav', (v) => {
       this.gravityId = v;
       this.render();
@@ -248,6 +255,7 @@ export class Menu {
         mapId: this.mapId,
         gravity: this.gravityValue(),
         weapons: this.enabledWeaponList(),
+        customMap: this.mapId === CUSTOM_MAP_ID ? loadCustomMap() : null,
       });
       if (!res?.ok) return this.err(res?.error || 'Could not create the room.');
       this.show('lobby');
@@ -343,7 +351,7 @@ export class Menu {
   // --- match setup: map / gravity / weapons ---------------------------------
 
   mapButtons() {
-    return MAP_ORDER.map((id) => {
+    const presets = MAP_ORDER.map((id) => {
       const m = MAPS[id];
       return `
         <button data-v="${id}" class="mapCard ${id === this.mapId ? 'on' : ''}">
@@ -351,6 +359,219 @@ export class Menu {
           <span>${escapeHtml(m.name)}</span>
         </button>`;
     }).join('');
+    return presets + this.customCard();
+  }
+
+  customCard() {
+    const saved = loadCustomMap();
+    if (!saved) {
+      return `
+        <button class="mapCard custom dashed" data-edit="1" title="Paint a map">
+          <div class="mapPlus">+</div>
+          <span>Create Map</span>
+        </button>`;
+    }
+    const selected = this.mapId === CUSTOM_MAP_ID;
+    return `
+      <div class="mapCard custom ${selected ? 'on' : ''}">
+        <button class="mapSelect" data-v="${CUSTOM_MAP_ID}" title="Use this map">
+          <img src="${mapPreviewUrl(CUSTOM_MAP_ID)}" alt="${escapeHtml(saved.name)}" />
+        </button>
+        <span>${escapeHtml(saved.name)}</span>
+        <button class="mapEdit" data-edit="1" title="Edit this map">✎ Edit</button>
+      </div>`;
+  }
+
+  mapDescText() {
+    if (this.mapId === CUSTOM_MAP_ID) {
+      const saved = loadCustomMap();
+      return saved ? `Your hand-painted map: "${saved.name}".` : MAPS[DEFAULT_MAP].desc;
+    }
+    return (MAPS[this.mapId] ?? MAPS[DEFAULT_MAP]).desc;
+  }
+
+  wireMapGrid(sel) {
+    const box = this.$(sel);
+    if (!box) return;
+    for (const b of box.querySelectorAll('button[data-v]')) {
+      b.addEventListener('click', () => {
+        this.mapId = b.dataset.v;
+        this.render();
+      });
+    }
+    for (const b of box.querySelectorAll('button[data-edit]')) {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.openEditor(this.screen);
+      });
+    }
+  }
+
+  // --- map editor -------------------------------------------------------
+
+  openEditor(returnScreen) {
+    const saved = loadCustomMap();
+    this.editorGrid = saved ? Float32Array.from(saved.heights) : blankControlGrid();
+    this.editorNoise = saved ? saved.noiseAmount : 0.3;
+    this.editorName = saved ? saved.name : 'My Map';
+    this.editorBrush = 0.5;
+    this.editorBrushSize = 4;
+    this.editorReturn = returnScreen === 'mapEditor' ? 'local' : returnScreen;
+    this.show('mapEditor');
+  }
+
+  screen_mapEditor() {
+    return `
+      <h2>MAP EDITOR</h2>
+      <p class="fine">Paint the shape you want — mountains, valleys, open water. Every
+         match layers its own random noise on top, so no two playthroughs of your map
+         come out quite the same.</p>
+      <div class="editorLayout">
+        <canvas id="paintCanvas" width="440" height="440"></canvas>
+        <div class="editorPanel">
+          <label>Height</label>
+          <div class="seg" id="segHeight">
+            <button data-v="0.05" class="${this.editorBrush === 0.05 ? 'on' : ''}">Sea</button>
+            <button data-v="0.3" class="${this.editorBrush === 0.3 ? 'on' : ''}">Low</button>
+            <button data-v="0.5" class="${this.editorBrush === 0.5 ? 'on' : ''}">Mid</button>
+            <button data-v="0.75" class="${this.editorBrush === 0.75 ? 'on' : ''}">High</button>
+            <button data-v="0.95" class="${this.editorBrush === 0.95 ? 'on' : ''}">Peak</button>
+          </div>
+          <label>Brush size <span id="brushSizeVal">${this.editorBrushSize}</span></label>
+          <input type="range" id="brushSize" min="1" max="10" value="${this.editorBrushSize}" />
+          <label>Noise amount <span id="noiseAmountVal">${Math.round(this.editorNoise * 100)}%</span></label>
+          <input type="range" id="noiseAmount" min="0" max="100" value="${Math.round(this.editorNoise * 100)}" />
+          <label>Map name</label>
+          <input id="mapName" maxlength="24" value="${escapeHtml(this.editorName)}" />
+          <div class="modes" style="margin-top:6px">
+            <button id="randomizeMap" class="alt">RANDOMIZE</button>
+            <button id="clearMap" class="alt">CLEAR</button>
+          </div>
+          <label style="margin-top:2px">In-game preview</label>
+          <img id="editorPreview" class="editorPreviewImg" alt="preview of the painted map" />
+        </div>
+      </div>
+      <div class="modes">
+        <button id="saveMap">SAVE &amp; USE</button>
+        <button id="cancelMap" class="alt">CANCEL</button>
+        ${loadCustomMap() ? '<button id="deleteMap" class="alt">DELETE</button>' : ''}
+      </div>`;
+  }
+
+  wire_mapEditor() {
+    this.teardownEditor();
+
+    const canvas = this.$('#paintCanvas');
+    const ctx = canvas.getContext('2d');
+    const dim = CONTROL_DIM;
+
+    const redraw = () => drawControlGrid(ctx, this.editorGrid, dim, canvas.width);
+    redraw();
+
+    const toCell = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: ((e.clientX - rect.left) / rect.width) * dim,
+        z: ((e.clientY - rect.top) / rect.height) * dim,
+      };
+    };
+
+    let painting = false;
+    const paintFromEvent = (e) => {
+      const { x, z } = toCell(e);
+      paintBrush(this.editorGrid, dim, x, z, this.editorBrushSize, this.editorBrush, 0.5);
+      redraw();
+      this.scheduleEditorPreview();
+    };
+    const onDown = (e) => {
+      painting = true;
+      paintFromEvent(e);
+    };
+    const onMove = (e) => {
+      if (painting) paintFromEvent(e);
+    };
+    const onUp = () => {
+      painting = false;
+    };
+    canvas.addEventListener('pointerdown', onDown);
+    // Bound to window, not the canvas, so a drag that leaves the canvas mid-stroke
+    // still paints and still releases cleanly. Cleaned up in teardownEditor —
+    // otherwise every re-render while the screen is open would pile up another
+    // pair of these on window forever.
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    this._editorMove = onMove;
+    this._editorUp = onUp;
+
+    this.segWire('#segHeight', (v) => {
+      this.editorBrush = +v;
+      this.render();
+    });
+
+    const sizeInput = this.$('#brushSize');
+    sizeInput.addEventListener('input', () => {
+      this.editorBrushSize = +sizeInput.value;
+      this.$('#brushSizeVal').textContent = sizeInput.value;
+    });
+
+    const noiseInput = this.$('#noiseAmount');
+    noiseInput.addEventListener('input', () => {
+      this.editorNoise = +noiseInput.value / 100;
+      this.$('#noiseAmountVal').textContent = `${noiseInput.value}%`;
+      this.scheduleEditorPreview();
+    });
+
+    this.$('#randomizeMap').onclick = () => {
+      randomizeControlGrid(this.editorGrid, dim);
+      redraw();
+      this.scheduleEditorPreview();
+    };
+    this.$('#clearMap').onclick = () => {
+      this.editorGrid.fill(0.45);
+      redraw();
+      this.scheduleEditorPreview();
+    };
+
+    this.$('#saveMap').onclick = () => {
+      const name = this.$('#mapName').value.trim().slice(0, 24) || 'My Map';
+      saveCustomMap({ name, noiseAmount: this.editorNoise, heights: this.editorGrid });
+      invalidateMapPreview(CUSTOM_MAP_ID);
+      this.mapId = CUSTOM_MAP_ID;
+      this.show(this.editorReturn);
+    };
+    this.$('#cancelMap').onclick = () => this.show(this.editorReturn);
+    const del = this.$('#deleteMap');
+    if (del) {
+      del.onclick = () => {
+        deleteCustomMap();
+        invalidateMapPreview(CUSTOM_MAP_ID);
+        if (this.mapId === CUSTOM_MAP_ID) this.mapId = DEFAULT_MAP;
+        this.show(this.editorReturn);
+      };
+    }
+
+    this.updateEditorPreview();
+  }
+
+  scheduleEditorPreview() {
+    clearTimeout(this._previewTimer);
+    this._previewTimer = setTimeout(() => this.updateEditorPreview(), 350);
+  }
+
+  updateEditorPreview() {
+    const img = this.$('#editorPreview');
+    if (!img) return;
+    const def = customMapDef({ name: this.editorName, noiseAmount: this.editorNoise, heights: this.editorGrid });
+    img.src = renderCustomPreview(def);
+  }
+
+  /** Drop the map editor's window-level drag listeners and any pending debounce. */
+  teardownEditor() {
+    if (this._editorMove) window.removeEventListener('pointermove', this._editorMove);
+    if (this._editorUp) window.removeEventListener('pointerup', this._editorUp);
+    this._editorMove = null;
+    this._editorUp = null;
+    clearTimeout(this._previewTimer);
   }
 
   gravButtons() {
