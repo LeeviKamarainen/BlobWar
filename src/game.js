@@ -50,6 +50,11 @@ export class Game {
     this.aiming = false;
     this.digging = false;
     this.digTimer = 0;
+    this.digDest = null;
+    // Absolute world-yaw the wall builder's ridge runs along. Null means
+    // "not set yet" — updatePreview picks a default (perpendicular to aim)
+    // the first time it previews a build, then the wheel adjusts it from there.
+    this.wallRotation = null;
 
     // Set by main.js once the renderer exists.
     this.minimap = null;
@@ -213,6 +218,7 @@ export class Game {
     this.aimPreview.visible = false;
     this.impactMarker.visible = false;
     this.lockMarker.visible = false;
+    this.wallShadow.visible = false;
   }
 
   buildAimPreview() {
@@ -258,6 +264,31 @@ export class Game {
     this.lockMarker.rotation.x = -Math.PI / 2;
     this.lockMarker.visible = false;
     this.scene.add(this.lockMarker);
+
+    // Footprint preview for the wall builder — one flat disc per stamp the
+    // final build will raise, laid out and rotated exactly like buildWall
+    // itself (see WALL_SHADOW_MAX for the pool size). Hidden segments beyond
+    // a given weapon's actual count just stay invisible.
+    this.wallShadow = new THREE.Group();
+    this.wallShadowDiscs = [];
+    for (let i = 0; i < WALL_SHADOW_MAX; i++) {
+      const disc = new THREE.Mesh(
+        new THREE.CircleGeometry(1, 24),
+        new THREE.MeshBasicMaterial({
+          color: 0x9fd8ff,
+          transparent: true,
+          opacity: 0.35,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        })
+      );
+      disc.rotation.x = -Math.PI / 2;
+      disc.visible = false;
+      this.wallShadowDiscs.push(disc);
+      this.wallShadow.add(disc);
+    }
+    this.wallShadow.visible = false;
+    this.scene.add(this.wallShadow);
   }
 
   bindInput() {
@@ -445,6 +476,7 @@ export class Game {
     this.selectedWeapon = id;
     this.charging = false;
     this.digging = false;
+    this.wallRotation = null;
     this.mapTarget = null;
     this.mapHomingTarget = null;
     if (this.activeTeam) this.hud.updateInventory(this.activeTeam.ammo, id);
@@ -517,6 +549,8 @@ export class Game {
     this.charging = false;
     this.digging = false;
     this.digTimer = 0;
+    this.digDest = null;
+    this.wallRotation = null;
     this.power = CFG.shot.minPower;
     this.shotsLeft = 0;
     this.burst = null;
@@ -811,6 +845,9 @@ export class Game {
       // How long Space was held, 0..1 of the 3s cap — burrow/drill scale their
       // dig by this instead of by shot power.
       hold: weapon.delivery === 'burrow' || weapon.delivery === 'drill' ? round2(clamp(this.digTimer / CFG.dig.maxHold, 0, 1)) : undefined,
+      // The wall's chosen facing — an observer has no wheel input of its own
+      // to have rotated it with, so the exact angle has to ride along.
+      wr: weapon.delivery === 'build' ? round2(this.wallRotation ?? this.defaultWallRotation()) : undefined,
     });
   }
 
@@ -874,7 +911,7 @@ export class Game {
         this.dropAtFeet(weapon);
         break;
       case 'build':
-        this.buildWall(weapon);
+        this.buildWall(weapon, cmd.wr);
         usedProjectile = false;
         break;
       case 'burrow':
@@ -882,7 +919,11 @@ export class Game {
         usedProjectile = false;
         break;
       case 'drill':
-        this.drillShaft(weapon, cmd.hold ?? 1);
+        // this.digDest is only set on the client that actually held Space for
+        // this shaft — the tick-carved spot it must finish at. A remote
+        // client replaying the command never held it, so it resolves the
+        // marker fresh against its own (still-untouched) terrain instead.
+        this.drillShaft(weapon, cmd.hold ?? 1, false, this.digDest);
         usedProjectile = false;
         break;
       default:
@@ -892,9 +933,12 @@ export class Game {
     this.charging = false;
     this.digging = false;
     this.digTimer = 0;
+    this.digDest = null;
+    this.wallRotation = null;
     this.aimPreview.visible = false;
     this.impactMarker.visible = false;
     this.lockMarker.visible = false;
+    this.wallShadow.visible = false;
     this.mapTarget = null;
     this.mapHomingTarget = null;
     blob.moveInput.set(0, 0);
@@ -1078,12 +1122,14 @@ export class Game {
   }
 
   /**
-   * Begin holding Space on the burrow/drill tools. Nothing touches the
-   * terrain yet — that only happens once in `stopDig`, from a single
-   * authoritative `fire` command, the same way every other weapon's effect is
-   * one command replayed identically on every client. The hold itself is
-   * local feel (a filling power bar, a dust puff every tick) driven by
-   * `this.digTimer` in `updateAim`.
+   * Begin holding Space on the burrow/drill tools. The actual carving happens
+   * bit by bit while Space stays down (see the digging tick in `updateAim`,
+   * which calls burrowSelf/drillShaft directly, locally, every ~0.25s) so the
+   * blob visibly sinks/bores deeper the whole time it's held rather than only
+   * at release. Release (`stopDig`) still sends the single authoritative
+   * `fire` command that every other weapon uses — remote clients, who never
+   * ran these local ticks, apply the whole effect from that one command, the
+   * same as before.
    */
   startDig(weapon) {
     if (this.shotsLeft <= 0 && this.activeTeam.ammo[weapon.id] <= 0) return;
@@ -1094,6 +1140,13 @@ export class Game {
     this.digging = true;
     this.digTimer = 0;
     this.digTickAt = 0;
+    // Lock the shaft's spot once for the whole hold: drillShaft re-carves from
+    // the surface down on every tick (see updateAim), and re-resolving the aim
+    // marker each tick would have it chase its own freshly dug pit — the
+    // simulated throw would sail further now that the ground it used to land
+    // on is gone. Burrow has no such feedback loop since it always targets the
+    // blob's own (settling) feet, so it needs no cached spot.
+    this.digDest = weapon.delivery === 'drill' ? this.resolveAimImpact(weapon) : null;
   }
 
   /** Release (or the 3-second cap) commits the dig as one fired shot. */
@@ -1103,17 +1156,21 @@ export class Game {
     this.fire();
   }
 
-  /** Mound a short ridge of earth at the aim marker — the wall builder. */
-  buildWall(weapon) {
+  /**
+   * Mound a short straight ridge of earth at the aim marker — the wall
+   * builder. `rotation` is the world-yaw the ridge runs along (see
+   * `defaultWallRotation`/`updateWallShadow` — it defaults to perpendicular
+   * to the aim direction, but the player can spin it with the scroll wheel
+   * while lining the shot up, and the shadow preview shows exactly this).
+   */
+  buildWall(weapon, rotation) {
     const dest = this.resolveAimImpact(weapon);
     if (!dest || !this.terrain.inBounds(dest.x, dest.z)) {
       this.hud.toast('NO SITE', '#ff6b6b', 900);
       return;
     }
-    const dir = this.rig.aimDirection();
-    // Perpendicular to the aim direction, so the stamps line up into a ridge
-    // that faces the shooter rather than a row pointing away from them.
-    const side = _v1.set(-dir.z, 0, dir.x).normalize();
+    const rot = rotation ?? this.defaultWallRotation();
+    const side = _v1.set(Math.sin(rot), 0, Math.cos(rot)).normalize();
     const w = weapon.wall;
     let changed = false;
     for (let i = 0; i < w.segments; i++) {
@@ -1136,36 +1193,47 @@ export class Game {
   /**
    * Dig straight down at your own feet and drop into the pit — the burrow
    * tool. `holdFrac` (0..1, how long Space was held against the 3s cap)
-   * scales the pit from a shallow scrape up to its full radius.
+   * scales the pit from a shallow scrape up to its full radius. Called on
+   * every tick while Space is held (see `updateAim`) as well as once more
+   * on release, so the blob sinks bit by bit instead of all at once — each
+   * call carves from wherever the blob has already settled, and carving the
+   * same pit again is a harmless no-op, so the final call on release (which
+   * always logs) just tops it off to the exact final radius. `silent` skips
+   * the log line for the in-hold ticks.
    */
-  burrowSelf(weapon, holdFrac = 1) {
+  burrowSelf(weapon, holdFrac = 1, silent = false) {
     const blob = this.activeBlob;
     const at = blob.position.clone();
     const d = weapon.dig;
     const radius = d.minRadius + (d.radius - d.minRadius) * holdFrac;
     const changed = this.terrain.carve(at.x, at.y + 0.3, at.z, radius);
-    this.fx.dust(at, Math.round(10 + 16 * holdFrac));
+    this.fx.dust(at, Math.round(silent ? 6 : 10 + 16 * holdFrac));
     this.audio.dig();
-    this.rig.addShake(0.15 + 0.15 * holdFrac);
+    this.rig.addShake(silent ? 0.08 : 0.15 + 0.15 * holdFrac);
     // Settle into the new pit immediately rather than waiting a physics frame,
     // so the blob doesn't look like it's briefly floating over the hole it
     // just dug.
     blob.position.y = this.terrain.heightAt(blob.position.x, blob.position.z) + CFG.blob.radius;
     blob.velocity.y = Math.min(blob.velocity.y, 0);
     blob.grounded = true;
-    this.log(changed ? `${blob.name} digs in for cover.` : `${blob.name} scrapes at solid rock.`);
+    if (!silent) this.log(changed ? `${blob.name} digs in for cover.` : `${blob.name} scrapes at solid rock.`);
   }
 
   /**
    * Bore a deep narrow shaft at the aim marker — the drill tool. `holdFrac`
    * (0..1, how long Space was held against the 3s cap) scales the number of
    * overlapping passes, so a tap barely scuffs the ground and a full 3s hold
-   * bores the whole shaft.
+   * bores the whole shaft. Called on every tick while Space is held (see
+   * `updateAim`) as well as once more on release: each call re-bores from
+   * the surface down to the current step count, so re-carving passes that
+   * were already cut on an earlier tick is a harmless no-op and the shaft
+   * simply reads as boring deeper, bit by bit, the longer Space stays down.
+   * `silent` skips the log line for the in-hold ticks.
    */
-  drillShaft(weapon, holdFrac = 1) {
-    const dest = this.resolveAimImpact(weapon);
+  drillShaft(weapon, holdFrac = 1, silent = false, dest = null) {
+    dest = dest ?? this.resolveAimImpact(weapon);
     if (!dest || !this.terrain.inBounds(dest.x, dest.z)) {
-      this.hud.toast('NO TARGET', '#ff6b6b', 900);
+      if (!silent) this.hud.toast('NO TARGET', '#ff6b6b', 900);
       return;
     }
     const d = weapon.drill;
@@ -1179,14 +1247,16 @@ export class Game {
       // as one continuous bore instead of a stack of separate craters.
       cy -= d.radius * 1.4;
     }
-    this.fx.dust(dest, Math.round(10 + 16 * holdFrac));
+    this.fx.dust(dest, Math.round(silent ? 6 : 10 + 16 * holdFrac));
     this.audio.dig();
-    this.rig.addShake(0.15 + 0.2 * holdFrac);
-    this.log(
-      changed
-        ? `${this.activeBlob.name} bores a shaft into the ground.`
-        : `${this.activeBlob.name}'s drill hits bedrock.`
-    );
+    this.rig.addShake(silent ? 0.08 : 0.15 + 0.2 * holdFrac);
+    if (!silent) {
+      this.log(
+        changed
+          ? `${this.activeBlob.name} bores a shaft into the ground.`
+          : `${this.activeBlob.name}'s drill hits bedrock.`
+      );
+    }
   }
 
   pickHomingTarget(dir) {
@@ -1343,7 +1413,15 @@ export class Game {
       this.aiming = aimingNow;
       this.rig.handleDrag(this.input.takeDrag(), { lockYaw: weapon?.category === 'gun' });
       const wheel = this.input.takeWheel();
-      if (wheel) this.rig.zoom(wheel);
+      // While actually lining up a wall, the scroll wheel spins its facing
+      // instead of zooming — camera zoom during that window isn't as useful
+      // as being able to rotate the ridge to match the terrain.
+      if (wheel && weapon?.delivery === 'build' && this.state === STATE.AIM && (this.aiming || this.charging)) {
+        if (this.wallRotation == null) this.wallRotation = this.defaultWallRotation();
+        this.wallRotation += wheel * WALL_ROTATE_STEP;
+      } else if (wheel) {
+        this.rig.zoom(wheel);
+      }
     } else {
       this.aiming = false;
       this.input.takeDrag();
@@ -1465,16 +1543,17 @@ export class Game {
         }
       } else if (this.digging) {
         this.digTimer = Math.min(CFG.dig.maxHold, this.digTimer + dt);
-        // A little dust and a tick every ~0.25s so holding reads as active
-        // digging instead of a silent wait for the timer to run out. Burrow
-        // digs at your own feet; drill digs wherever the marker currently
-        // points, so it tracks the live impact preview rather than the blob.
+        // Actually carve a bit more every ~0.25s instead of only charging up
+        // silently and dumping the whole shaft/pit out on release — burrow
+        // and drill scale their own effect by the current (still-growing)
+        // hold fraction, so each tick pushes the blob a little further down
+        // (burrow) or bores a little deeper (drill) while Space stays held.
         if (this.digTimer - this.digTickAt >= 0.25) {
           this.digTickAt = this.digTimer;
           const w = WEAPONS[this.selectedWeapon];
-          const at = w.delivery === 'drill' ? (this.previewImpact ?? blob.position) : blob.position;
-          this.fx.dust(at, 5);
-          this.audio.tick();
+          const frac = this.digTimer / CFG.dig.maxHold;
+          if (w.delivery === 'burrow') this.burrowSelf(w, frac, true);
+          else this.drillShaft(w, frac, true, this.digDest);
         }
         if (this.digTimer >= CFG.dig.maxHold) {
           this.stopDig();
@@ -1649,6 +1728,7 @@ export class Game {
     if (!arcs) {
       this.aimPreview.visible = false;
       this.impactMarker.visible = false;
+      this.wallShadow.visible = false;
       this.previewImpact = null;
       return;
     }
@@ -1657,12 +1737,29 @@ export class Game {
     // simulating an imaginary shot to guess a landing spot (see callAirstrike).
     if (weapon.delivery === 'airstrike' && this.mapTarget) {
       this.aimPreview.visible = false;
+      this.wallShadow.visible = false;
       this.previewImpact = this.mapTarget;
       const normal = this.terrain.normalAt(this.mapTarget.x, this.mapTarget.z, _v1);
       this.impactMarker.visible = true;
       this.impactMarker.position.copy(this.mapTarget).addScaledVector(normal, 0.6);
       this.impactMarker.quaternion.setFromUnitVectors(_ringAxis, normal);
       this.impactMarker.scale.setScalar((weapon.strike.count * weapon.strike.spacing) / 2.4);
+      return;
+    }
+
+    // Mid-bore, the marker has to stay put at the spot startDig locked in —
+    // re-simulating the arc against camera movement here would drift the
+    // ring away from where the shaft is actually being carved (see
+    // startDig's note on why the dig target itself is cached).
+    if (weapon.delivery === 'drill' && this.digging && this.digDest) {
+      this.aimPreview.visible = false;
+      this.wallShadow.visible = false;
+      this.previewImpact = this.digDest;
+      const normal = this.terrain.normalAt(this.digDest.x, this.digDest.z, _v1);
+      this.impactMarker.visible = true;
+      this.impactMarker.position.copy(this.digDest).addScaledVector(normal, 0.6);
+      this.impactMarker.quaternion.setFromUnitVectors(_ringAxis, normal);
+      this.impactMarker.scale.setScalar(Math.max(2, weapon.radius * 0.5));
       return;
     }
 
@@ -1675,6 +1772,7 @@ export class Game {
     if (this.playerControlled() && !this.aiming && !this.charging && !this.digging) {
       this.aimPreview.visible = false;
       this.impactMarker.visible = false;
+      this.wallShadow.visible = false;
       this.previewImpact = null;
       return;
     }
@@ -1709,7 +1807,14 @@ export class Game {
     this.aimPreview.visible = count > 1;
 
     this.previewImpact = res.impact && res.reason !== 'offmap' ? res.impact : null;
-    if (this.previewImpact) {
+    if (this.previewImpact && weapon.delivery === 'build') {
+      // The wall builder gets its own footprint shadow instead of the
+      // generic ring — see updateWallShadow.
+      this.impactMarker.visible = false;
+      if (this.wallRotation == null) this.wallRotation = this.defaultWallRotation();
+      this.updateWallShadow(weapon, this.previewImpact, this.wallRotation);
+    } else if (this.previewImpact) {
+      this.wallShadow.visible = false;
       const normal = this.terrain.normalAt(res.impact.x, res.impact.z, _v1);
       this.impactMarker.visible = true;
       this.impactMarker.position.copy(res.impact).addScaledVector(normal, 0.6);
@@ -1722,7 +1827,40 @@ export class Game {
       this.impactMarker.scale.setScalar(size);
     } else {
       this.impactMarker.visible = false;
+      this.wallShadow.visible = false;
     }
+  }
+
+  /** Perpendicular-to-aim default for the wall builder's facing, in the same yaw convention as rig.aimYaw. */
+  defaultWallRotation() {
+    return this.rig.aimYaw - Math.PI / 2;
+  }
+
+  /**
+   * Lay out the wall builder's footprint preview — one flat disc per stamp
+   * buildWall will raise, positioned with the exact same spacing formula so
+   * the shadow always matches what pressing build actually produces.
+   */
+  updateWallShadow(weapon, dest, rotation) {
+    const w = weapon.wall;
+    const side = _v1.set(Math.sin(rotation), 0, Math.cos(rotation)).normalize();
+    const sx = side.x;
+    const sz = side.z;
+    for (let i = 0; i < WALL_SHADOW_MAX; i++) {
+      const disc = this.wallShadowDiscs[i];
+      if (i >= w.segments) {
+        disc.visible = false;
+        continue;
+      }
+      const offset = (i - (w.segments - 1) / 2) * w.spacing;
+      const px = dest.x + sx * offset;
+      const pz = dest.z + sz * offset;
+      const py = this.terrain.heightAt(px, pz);
+      disc.position.set(px, py + 0.08, pz);
+      disc.scale.setScalar(w.radius);
+      disc.visible = true;
+    }
+    this.wallShadow.visible = true;
   }
 
   updateFlight(dt) {
@@ -1810,6 +1948,10 @@ export class Game {
 }
 
 const PREVIEW_DOTS = 110;
+/** Pool size for the wall builder's footprint preview — covers any wall's segment count. */
+const WALL_SHADOW_MAX = 8;
+/** Radians the wall builder's facing rotates per wheel notch while aiming it. */
+const WALL_ROTATE_STEP = Math.PI / 12;
 /** Simulation slice. Must be identical on every client — see Game.update. */
 const FIXED_DT = 1 / 60;
 const _v1 = new THREE.Vector3();
