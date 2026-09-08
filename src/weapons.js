@@ -7,7 +7,13 @@
  *
  * Fields:
  *   delivery   'launch' (aimed arc) | 'drop' (at your feet) | 'airstrike'
- *              (falls from the sky onto the aim marker) | 'melee' | 'teleport'
+ *              (falls from the sky onto the aim marker) | 'melee' | 'teleport' |
+ *              'build' (raises terrain at the aim marker) | 'burrow' (hold to
+ *              dig in at your own feet, deeper the longer you hold) | 'drill'
+ *              (hold to bore a shaft at the aim marker, deeper the longer you
+ *              hold) — 'burrow'/'drill' read CFG.dig.maxHold as their cap and
+ *              scale their `dig`/`drill` shape by the held fraction, see
+ *              Game.startDig/stopDig
  *   detonate   'impact' | 'fuse' | 'proximity' | 'never'
  *   wind       how hard the wind pushes it, 0..1
  *   gravityScale  multiplier on gravity (homing missiles float, slugs ignore it)
@@ -318,6 +324,47 @@ export const WEAPONS = {
     radius: 0,
     wind: 0,
   },
+  wallBuilder: {
+    id: 'wallBuilder',
+    name: 'Wall Builder',
+    icon: '🧱',
+    category: 'tool',
+    desc: 'Mounds a ridge of earth wherever the aim marker lands. Charge for range.',
+    ammo: 3,
+    delivery: 'build',
+    damage: 0,
+    radius: 2.6,
+    wind: 0,
+    wall: { segments: 3, spacing: 2.3, radius: 2.6, height: 9 },
+  },
+  burrow: {
+    id: 'burrow',
+    name: 'Burrow',
+    icon: '🕳️',
+    category: 'tool',
+    desc: 'Hold to dig down at your feet — the longer you hold, the deeper you go.',
+    ammo: 3,
+    delivery: 'burrow',
+    damage: 0,
+    radius: 0,
+    wind: 0,
+    dig: { minRadius: 1.6, radius: 5.5 },
+  },
+  drill: {
+    id: 'drill',
+    name: 'Drill',
+    icon: '⛏️',
+    category: 'tool',
+    desc: 'Hold to bore into the aim marker — the longer you hold, the deeper the shaft.',
+    ammo: 3,
+    delivery: 'drill',
+    damage: 0,
+    radius: 2.6,
+    wind: 0,
+    noCharge: true,
+    power: 34,
+    drill: { radius: 2.6, minSteps: 1, maxSteps: 6 },
+  },
 
   // --- internal munitions ---------------------------------------------------
   clusterShard: {
@@ -450,6 +497,9 @@ export const CRATE_LOOT = [
   { id: 'airstrike', n: 1, w: 2 },
   { id: 'teleport', n: 2, w: 2 },
   { id: 'bat', n: 1, w: 2 },
+  { id: 'wallBuilder', n: 2, w: 2 },
+  { id: 'burrow', n: 2, w: 2 },
+  { id: 'drill', n: 2, w: 2 },
   { id: 'melon', n: 1, w: 1 },
   { id: 'mule', n: 1, w: 1 },
 ];

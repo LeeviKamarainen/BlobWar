@@ -48,6 +48,8 @@ export class Game {
     this.acc = 0;
     this.wasAiming = false;
     this.aiming = false;
+    this.digging = false;
+    this.digTimer = 0;
 
     // Set by main.js once the renderer exists.
     this.minimap = null;
@@ -263,7 +265,9 @@ export class Game {
     i.onPress('space', () => {
       if (!this.canAct()) return;
       const w = WEAPONS[this.selectedWeapon];
-      if (w.noCharge || w.delivery === 'teleport') {
+      if (w.delivery === 'burrow' || w.delivery === 'drill') {
+        this.startDig(w);
+      } else if (w.noCharge || w.delivery === 'teleport') {
         this.power = w.power ?? CFG.shot.maxPower;
         this.fire();
       } else {
@@ -274,6 +278,7 @@ export class Game {
     });
     i.onRelease('space', () => {
       if (this.charging) this.fire();
+      else if (this.digging) this.stopDig();
     });
     i.onPress('j', () => this.tryJump());
     i.onPress('shift', () => this.tryJump());
@@ -288,6 +293,7 @@ export class Game {
       if (this.canAct() || this.hud.inventoryOpen) {
         this.hud.toggleInventory();
         this.charging = false;
+        this.digging = false;
       }
     });
     i.onPress('m', () => {
@@ -438,6 +444,7 @@ export class Game {
     if (!WEAPONS[id]) return;
     this.selectedWeapon = id;
     this.charging = false;
+    this.digging = false;
     this.mapTarget = null;
     this.mapHomingTarget = null;
     if (this.activeTeam) this.hud.updateInventory(this.activeTeam.ammo, id);
@@ -508,6 +515,8 @@ export class Game {
     this.state = STATE.AIM;
     this.timer = this.practice ? Infinity : CFG.turn.time;
     this.charging = false;
+    this.digging = false;
+    this.digTimer = 0;
     this.power = CFG.shot.minPower;
     this.shotsLeft = 0;
     this.burst = null;
@@ -715,6 +724,7 @@ export class Game {
     this.state = STATE.SETTLE;
     this.settleTimer = CFG.turn.settleTime;
     this.charging = false;
+    this.digging = false;
     this.aimPreview.visible = false;
     this.impactMarker.visible = false;
     if (this.activeBlob) this.activeBlob.moveInput.set(0, 0);
@@ -798,6 +808,9 @@ export class Game {
       // A map-picked strike point, so every client (not just the one who
       // clicked the map) walks the bombs over the same spot.
       mt: weapon.delivery === 'airstrike' && this.mapTarget ? [round2(this.mapTarget.x), round2(this.mapTarget.z)] : null,
+      // How long Space was held, 0..1 of the 3s cap — burrow/drill scale their
+      // dig by this instead of by shot power.
+      hold: weapon.delivery === 'burrow' || weapon.delivery === 'drill' ? round2(clamp(this.digTimer / CFG.dig.maxHold, 0, 1)) : undefined,
     });
   }
 
@@ -860,11 +873,25 @@ export class Game {
       case 'drop':
         this.dropAtFeet(weapon);
         break;
+      case 'build':
+        this.buildWall(weapon);
+        usedProjectile = false;
+        break;
+      case 'burrow':
+        this.burrowSelf(weapon, cmd.hold ?? 1);
+        usedProjectile = false;
+        break;
+      case 'drill':
+        this.drillShaft(weapon, cmd.hold ?? 1);
+        usedProjectile = false;
+        break;
       default:
         this.launch(weapon, dir);
     }
 
     this.charging = false;
+    this.digging = false;
+    this.digTimer = 0;
     this.aimPreview.visible = false;
     this.impactMarker.visible = false;
     this.lockMarker.visible = false;
@@ -1048,6 +1075,118 @@ export class Game {
     this.fx.burst(blob.position, 26, { speed: 9, size: 0.45, color: 0x9fd8ff, gravity: 4, life: 0.9 });
     this.audio.warp();
     this.rig.setTarget(blob.position, true);
+  }
+
+  /**
+   * Begin holding Space on the burrow/drill tools. Nothing touches the
+   * terrain yet — that only happens once in `stopDig`, from a single
+   * authoritative `fire` command, the same way every other weapon's effect is
+   * one command replayed identically on every client. The hold itself is
+   * local feel (a filling power bar, a dust puff every tick) driven by
+   * `this.digTimer` in `updateAim`.
+   */
+  startDig(weapon) {
+    if (this.shotsLeft <= 0 && this.activeTeam.ammo[weapon.id] <= 0) return;
+    // Drill aims with a fixed power (like any other noCharge weapon) rather
+    // than ramping one — Space is spoken for by the hold-to-dig timer — so
+    // pin it now, before resolveAimImpact reads it in updatePreview/stopDig.
+    if (weapon.power != null) this.power = weapon.power;
+    this.digging = true;
+    this.digTimer = 0;
+    this.digTickAt = 0;
+  }
+
+  /** Release (or the 3-second cap) commits the dig as one fired shot. */
+  stopDig() {
+    if (!this.digging) return;
+    this.digging = false;
+    this.fire();
+  }
+
+  /** Mound a short ridge of earth at the aim marker — the wall builder. */
+  buildWall(weapon) {
+    const dest = this.resolveAimImpact(weapon);
+    if (!dest || !this.terrain.inBounds(dest.x, dest.z)) {
+      this.hud.toast('NO SITE', '#ff6b6b', 900);
+      return;
+    }
+    const dir = this.rig.aimDirection();
+    // Perpendicular to the aim direction, so the stamps line up into a ridge
+    // that faces the shooter rather than a row pointing away from them.
+    const side = _v1.set(-dir.z, 0, dir.x).normalize();
+    const w = weapon.wall;
+    let changed = false;
+    for (let i = 0; i < w.segments; i++) {
+      const offset = (i - (w.segments - 1) / 2) * w.spacing;
+      const px = dest.x + side.x * offset;
+      const pz = dest.z + side.z * offset;
+      const py = this.terrain.heightAt(px, pz);
+      if (this.terrain.raise(px, py, pz, w.radius, w.height)) changed = true;
+    }
+    if (!changed) {
+      this.hud.toast('NOTHING TO BUILD ON', '#ff6b6b', 900);
+      return;
+    }
+    this.fx.dust(dest.clone().add(new THREE.Vector3(0, 1, 0)), 20);
+    this.audio.build();
+    this.rig.addShake(0.3);
+    this.log(`${this.activeBlob.name} raises a wall.`);
+  }
+
+  /**
+   * Dig straight down at your own feet and drop into the pit — the burrow
+   * tool. `holdFrac` (0..1, how long Space was held against the 3s cap)
+   * scales the pit from a shallow scrape up to its full radius.
+   */
+  burrowSelf(weapon, holdFrac = 1) {
+    const blob = this.activeBlob;
+    const at = blob.position.clone();
+    const d = weapon.dig;
+    const radius = d.minRadius + (d.radius - d.minRadius) * holdFrac;
+    const changed = this.terrain.carve(at.x, at.y + 0.3, at.z, radius);
+    this.fx.dust(at, Math.round(10 + 16 * holdFrac));
+    this.audio.dig();
+    this.rig.addShake(0.15 + 0.15 * holdFrac);
+    // Settle into the new pit immediately rather than waiting a physics frame,
+    // so the blob doesn't look like it's briefly floating over the hole it
+    // just dug.
+    blob.position.y = this.terrain.heightAt(blob.position.x, blob.position.z) + CFG.blob.radius;
+    blob.velocity.y = Math.min(blob.velocity.y, 0);
+    blob.grounded = true;
+    this.log(changed ? `${blob.name} digs in for cover.` : `${blob.name} scrapes at solid rock.`);
+  }
+
+  /**
+   * Bore a deep narrow shaft at the aim marker — the drill tool. `holdFrac`
+   * (0..1, how long Space was held against the 3s cap) scales the number of
+   * overlapping passes, so a tap barely scuffs the ground and a full 3s hold
+   * bores the whole shaft.
+   */
+  drillShaft(weapon, holdFrac = 1) {
+    const dest = this.resolveAimImpact(weapon);
+    if (!dest || !this.terrain.inBounds(dest.x, dest.z)) {
+      this.hud.toast('NO TARGET', '#ff6b6b', 900);
+      return;
+    }
+    const d = weapon.drill;
+    const steps = Math.max(1, Math.round(d.minSteps + (d.maxSteps - d.minSteps) * holdFrac));
+    let cy = dest.y + 0.5;
+    let changed = false;
+    for (let i = 0; i < steps; i++) {
+      if (this.terrain.carve(dest.x, cy, dest.z, d.radius)) changed = true;
+      // Each pass bores a hemisphere of its own radius; stepping by less than
+      // 2x the radius keeps consecutive passes overlapping so the shaft reads
+      // as one continuous bore instead of a stack of separate craters.
+      cy -= d.radius * 1.4;
+    }
+    this.fx.dust(dest, Math.round(10 + 16 * holdFrac));
+    this.audio.dig();
+    this.rig.addShake(0.15 + 0.2 * holdFrac);
+    this.log(
+      changed
+        ? `${this.activeBlob.name} bores a shaft into the ground.`
+        : `${this.activeBlob.name}'s drill hits bedrock.`
+    );
   }
 
   pickHomingTarget(dir) {
@@ -1324,6 +1463,23 @@ export class Game {
           this.power = CFG.shot.minPower;
           this.chargeDir = 1;
         }
+      } else if (this.digging) {
+        this.digTimer = Math.min(CFG.dig.maxHold, this.digTimer + dt);
+        // A little dust and a tick every ~0.25s so holding reads as active
+        // digging instead of a silent wait for the timer to run out. Burrow
+        // digs at your own feet; drill digs wherever the marker currently
+        // points, so it tracks the live impact preview rather than the blob.
+        if (this.digTimer - this.digTickAt >= 0.25) {
+          this.digTickAt = this.digTimer;
+          const w = WEAPONS[this.selectedWeapon];
+          const at = w.delivery === 'drill' ? (this.previewImpact ?? blob.position) : blob.position;
+          this.fx.dust(at, 5);
+          this.audio.tick();
+        }
+        if (this.digTimer >= CFG.dig.maxHold) {
+          this.stopDig();
+          return;
+        }
       }
     } else {
       // Somebody else's turn: their blob is driven by the pose stream, and our
@@ -1354,7 +1510,12 @@ export class Game {
 
     this.updatePreview();
     const frac = (this.power - CFG.shot.minPower) / (CFG.shot.maxPower - CFG.shot.minPower);
-    this.hud.setPower(this.charging ? frac : 0, (this.rig.aimPitch * 180) / Math.PI, this.charging);
+    const digFrac = this.digTimer / CFG.dig.maxHold;
+    this.hud.setPower(
+      this.charging ? frac : this.digging ? digFrac : 0,
+      (this.rig.aimPitch * 180) / Math.PI,
+      this.charging || this.digging
+    );
   }
 
   updateRetreat(dt) {
@@ -1479,7 +1640,12 @@ export class Game {
       this.lockMarker.position.y += 0.15;
     }
 
-    const arcs = weapon.delivery === 'launch' || weapon.delivery === 'airstrike' || weapon.delivery === 'teleport';
+    const arcs =
+      weapon.delivery === 'launch' ||
+      weapon.delivery === 'airstrike' ||
+      weapon.delivery === 'teleport' ||
+      weapon.delivery === 'build' ||
+      weapon.delivery === 'drill';
     if (!arcs) {
       this.aimPreview.visible = false;
       this.impactMarker.visible = false;
@@ -1506,7 +1672,7 @@ export class Game {
     // happened to face, which is exactly the clutter that made a free-look
     // followed by a fresh drag read as broken. AI planning and watching a
     // remote player's turn are unaffected — playerControlled() is false then.
-    if (this.playerControlled() && !this.aiming && !this.charging) {
+    if (this.playerControlled() && !this.aiming && !this.charging && !this.digging) {
       this.aimPreview.visible = false;
       this.impactMarker.visible = false;
       this.previewImpact = null;

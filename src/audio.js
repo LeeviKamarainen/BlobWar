@@ -113,6 +113,16 @@ export class Audio {
     this.noise({ duration: 0.18, gain: 0.35, type: 'bandpass', from: 400, to: 2200, q: 1.4 });
   }
 
+  dig() {
+    this.noise({ duration: 0.3, gain: 0.4, type: 'lowpass', from: 700, to: 90, q: 0.9 });
+    this.tone({ freq: 140, to: 80, duration: 0.22, gain: 0.15, type: 'square' });
+  }
+
+  build() {
+    this.thud();
+    this.tone({ freq: 180, to: 320, duration: 0.22, gain: 0.18, type: 'triangle' });
+  }
+
   warp() {
     this.tone({ freq: 180, to: 1400, duration: 0.35, gain: 0.2, type: 'sine' });
     this.tone({ freq: 1400, to: 180, duration: 0.35, gain: 0.14, type: 'sine', delay: 0.16 });

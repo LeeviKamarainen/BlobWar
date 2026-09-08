@@ -116,7 +116,7 @@ export class Menu {
   screen_title() {
     return `
       <h1>BLOB WAR 3D</h1>
-      <p>Turn-based artillery on a big destructible island. Sixteen weapons, supply
+      <p>Turn-based artillery on a big destructible island. Nineteen weapons, supply
          crates parachuting in, and a great many ways to end up in the sea.</p>
       ${this.data?.error ? `<p style="color:#ff6b6b">${this.data.error}</p>` : ''}
       <div class="modes">

@@ -100,9 +100,12 @@ export class HUD {
     this.el.curIcon.textContent = w.icon;
     this.el.curName.textContent = w.name;
     this.el.curAmmo.textContent = count === Infinity ? 'unlimited' : `${count} left`;
-    this.el.powerHint.innerHTML = w.noCharge
-      ? 'Press <kbd>Space</kbd> to use'
-      : 'Hold <kbd>Space</kbd> to charge, release to fire';
+    this.el.powerHint.innerHTML =
+      w.delivery === 'burrow' || w.delivery === 'drill'
+        ? 'Hold <kbd>Space</kbd> to dig, release to stop'
+        : w.noCharge
+          ? 'Press <kbd>Space</kbd> to use'
+          : 'Hold <kbd>Space</kbd> to charge, release to fire';
   }
 
   // --- roster ---------------------------------------------------------------

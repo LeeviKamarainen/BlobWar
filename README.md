@@ -2,7 +2,7 @@
 
 A turn-based artillery game in the spirit of *Worms*, in 3D, built with [three.js](https://threejs.org/).
 Two squads of four blobs take turns lobbing explosives at each other across a big
-procedurally generated island. Sixteen weapons, supply crates parachuting in every
+procedurally generated island. Nineteen weapons, supply crates parachuting in every
 turn, and fully destructible ground — craters stay, and a deep enough one floods with
 seawater. Last team wobbling wins.
 
@@ -120,7 +120,7 @@ feel for how each weapon behaves and how the controls work.
 
 ### Weapons
 
-Sixteen of them, browsable with `Tab`. Ammo is per team and shared across the squad.
+Nineteen of them, browsable with `Tab`. Ammo is per team and shared across the squad.
 
 **Launchers** — aimed arcs.
 
@@ -162,6 +162,9 @@ Sixteen of them, browsable with `Tab`. Ammo is per team and shared across the sq
 | --- | --- | --- |
 | Baseball Bat | 3 | Melee. Launches anything in front of you a very long way. |
 | Teleport | 3 | Blink to wherever the marker is resting. |
+| Wall Builder | 3 | Mounds a ridge of earth at the marker. Charge for range. |
+| Burrow | 3 | Digs straight down at your feet and drops you into cover. |
+| Drill | 3 | Bores a deep shaft at the marker. Charge for range. |
 
 ### Supply drops
 
@@ -244,6 +247,11 @@ translucent sheets never blend twice and print the seam they exist to hide.
 blast sphere down to the bottom of that sphere, never up. That gives real craters and
 keeps collision to a bilinear height lookup, but it means no overhangs or caves — a
 blast at the foot of a cliff shears the cliff top off rather than tunnelling through it.
+The Drill and Burrow weapons are `carve()` under the hood — a deep shaft is a stack of
+overlapping hemispheres, not an actual tunnel, and same caveat applies. `Terrain.raise()`
+is the one thing that pushes vertices *up*, used by the Wall Builder to mound a ridge; for
+the same heightmap-not-voxels reason, a "wall" is a steep-sided mound rather than a
+freestanding structure with an underside.
 
 **Carving never recomputes vertex normals.** The terrain material is flat-shaded, so the
 fragment shader derives normals from screen-space derivatives and the normal attribute is

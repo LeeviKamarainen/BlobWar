@@ -8,7 +8,9 @@ import { MAPS, DEFAULT_MAP } from './maps.js';
  *
  * The heightmap is a (seg+1)^2 grid of Y values. Explosions carve a hemisphere
  * out of it (`carve`), which is what makes the terrain destructible: a vertex is
- * pushed down to the lowest point of the blast sphere above it, never up.
+ * pushed down to the lowest point of the blast sphere above it, never up by
+ * carve itself. The one thing that does push a vertex up is `raise`, used by
+ * the wall-building tool to mound earth rather than remove it.
  */
 export class Terrain {
   constructor(seed = 1, mapDef = MAPS[DEFAULT_MAP]) {
@@ -218,8 +220,54 @@ export class Terrain {
     return changed;
   }
 
+  /**
+   * Push a dome of terrain upward out of the heightmap, never down — the
+   * mirror image of `carve`. `radius` is the footprint, `height` the apex
+   * rise above `cy`, kept as a separate knob (rather than reusing radius the
+   * way carve's hemisphere does) so a wall can be tall and narrow instead of
+   * a shallow wide mound.
+   */
+  raise(cx, cy, cz, radius, height) {
+    const r2 = radius * radius;
+    const minIx = Math.max(0, Math.floor((cx - radius + this.half) / this.step));
+    const maxIx = Math.min(this.seg, Math.ceil((cx + radius + this.half) / this.step));
+    const minIz = Math.max(0, Math.floor((cz - radius + this.half) / this.step));
+    const maxIz = Math.min(this.seg, Math.ceil((cz + radius + this.half) / this.step));
+    let changed = false;
+
+    for (let iz = minIz; iz <= maxIz; iz++) {
+      const z = iz * this.step - this.half;
+      const dz = z - cz;
+      for (let ix = minIx; ix <= maxIx; ix++) {
+        const x = ix * this.step - this.half;
+        const dx = x - cx;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= r2) continue;
+        const idx = iz * this.dim + ix;
+        const target = cy + height * Math.sqrt(1 - d2 / r2);
+        if (this.heights[idx] < target) {
+          this.heights[idx] = Math.min(target, CFG.terrain.maxHeight + 20);
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      this.revision++;
+      this.refreshRegion(minIx, minIz, maxIx, maxIz);
+      // Same replay trick as craters (see carve): pure arithmetic, IEEE-exact,
+      // and max() makes it idempotent, so it can share the crater log and be
+      // replayed on other clients the same way.
+      this.craterLog.push({ x: cx, y: cy, z: cz, r: radius, h: height, type: 'raise' });
+    }
+    return changed;
+  }
+
   applyCraters(list) {
-    for (const c of list) this.carve(c.x, c.y, c.z, c.r);
+    for (const c of list) {
+      if (c.type === 'raise') this.raise(c.x, c.y, c.z, c.r, c.h);
+      else this.carve(c.x, c.y, c.z, c.r);
+    }
   }
 
   /** Last-resort online resync: overwrite the whole heightmap. */

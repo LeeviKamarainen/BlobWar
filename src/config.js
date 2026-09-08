@@ -47,6 +47,9 @@ export const CFG = {
     maxPower: 58,
     chargeRate: 38,          // power per second while holding fire
   },
+  dig: {
+    maxHold: 3,              // seconds; burrow/drill scale their effect by how long you hold
+  },
   turn: {
     time: 45,                // seconds to aim
     settleTime: 1.4,         // grace period after everything stops moving
