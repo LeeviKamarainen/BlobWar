@@ -31,6 +31,7 @@ export class Menu {
     this.name = localStorage.getItem('blobwar.name') || '';
     this.teamCount = CFG.defaultTeamCount;
     this.opponents = 'ai';
+    this.realtime = false;
     this.mapId = DEFAULT_MAP;
     this.gravityId = CFG.defaultGravityPreset;
     this.disabledWeapons = new Set();
@@ -140,10 +141,15 @@ export class Menu {
       <div class="setup">
         <label>Squads</label>
         <div class="seg" id="segTeams">${this.segButtons(2, CFG.maxTeams, this.teamCount)}</div>
+        <label>Pace</label>
+        <div class="seg" id="segPace">
+          <button data-v="turns" class="${!this.realtime ? 'on' : ''}">Turns</button>
+          <button data-v="realtime" class="${this.realtime ? 'on' : ''}">Real-Time</button>
+        </div>
         <label>Opponents</label>
         <div class="seg" id="segOpp">
           <button data-v="ai" class="${this.opponents === 'ai' ? 'on' : ''}">Computer</button>
-          <button data-v="human" class="${this.opponents === 'human' ? 'on' : ''}">Hotseat</button>
+          <button data-v="human" class="${this.opponents === 'human' ? 'on' : ''}" ${this.realtime ? 'disabled' : ''}>Hotseat</button>
         </div>
         <label>Map</label>
         <div class="mapGrid" id="segMap">${this.mapButtons()}</div>
@@ -167,13 +173,24 @@ export class Menu {
         this.opponents === 'human'
           ? `${this.teamCount} human squads taking turns on this keyboard.`
           : `You against ${this.teamCount - 1} computer squad${this.teamCount > 2 ? 's' : ''}.`;
-      this.$('#localNote').textContent = `${note} ${blobs} blobs each.`;
+      const pace = this.realtime
+        ? ' Real-time: everybody moves and fires at once, no waiting your turn.'
+        : '';
+      this.$('#localNote').textContent = `${note} ${blobs} blobs each.${pace}`;
     };
     this.segWire('#segTeams', (v) => {
       this.teamCount = +v;
       this.render();
     });
+    this.segWire('#segPace', (v) => {
+      this.realtime = v === 'realtime';
+      // Real-time is simultaneous input on one keyboard — that only works
+      // solo vs the computer, so Hotseat isn't an option once it's on.
+      if (this.realtime) this.opponents = 'ai';
+      this.render();
+    });
     this.segWire('#segOpp', (v) => {
+      if (this.realtime && v === 'human') return;
       this.opponents = v;
       this.render();
     });
@@ -194,6 +211,7 @@ export class Menu {
         gravity: this.gravityValue(),
         weapons: this.enabledWeaponList(),
         customMap: this.mapId === CUSTOM_MAP_ID ? loadCustomMap() : null,
+        realtime: this.realtime,
       });
     };
   }
@@ -207,6 +225,11 @@ export class Menu {
         <input id="pname" maxlength="16" placeholder="Player" value="${escapeHtml(this.name)}" />
         <label>Squads</label>
         <div class="seg" id="segTeams">${this.segButtons(2, CFG.maxTeams, this.teamCount)}</div>
+        <label>Pace</label>
+        <div class="seg" id="segPace">
+          <button data-v="turns" class="${!this.realtime ? 'on' : ''}">Turns</button>
+          <button data-v="realtime" class="${this.realtime ? 'on' : ''}">Real-Time</button>
+        </div>
         <label>Room code</label>
         <input id="code" maxlength="4" placeholder="ABCD" style="text-transform:uppercase" />
         <label>Map</label>
@@ -228,6 +251,10 @@ export class Menu {
   wire_online() {
     this.segWire('#segTeams', (v) => {
       this.teamCount = +v;
+      this.render();
+    });
+    this.segWire('#segPace', (v) => {
+      this.realtime = v === 'realtime';
       this.render();
     });
     this.wireMapGrid('#segMap');
@@ -256,6 +283,7 @@ export class Menu {
         gravity: this.gravityValue(),
         weapons: this.enabledWeaponList(),
         customMap: this.mapId === CUSTOM_MAP_ID ? loadCustomMap() : null,
+        realtime: this.realtime,
       });
       if (!res?.ok) return this.err(res?.error || 'Could not create the room.');
       this.show('lobby');
@@ -316,9 +344,9 @@ export class Menu {
       <div class="keys">
         <span>Move</span><span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> (camera-relative)</span>
         <span>Jump</span><span><kbd>J</kbd></span>
-        <span>Aim</span><span>drag with the left mouse button</span>
-        <span>Free look</span><span>drag with the right mouse button · <kbd>C</kbd> recenters</span>
-        <span>Fire</span><span>hold <kbd>Space</kbd> to build power, release to launch</span>
+        <span>Aim</span><span>drag with the right mouse button</span>
+        <span>Free look</span><span><kbd>Ctrl</kbd> + drag with the right mouse button · <kbd>C</kbd> recenters</span>
+        <span>Fire</span><span>hold left click to build power, release to launch</span>
         <span>Armory</span><span><kbd>Tab</kbd> to browse · <kbd>Q</kbd><kbd>E</kbd> to cycle · <kbd>1</kbd>–<kbd>9</kbd> quick slots</span>
         <span>Map</span><span><kbd>M</kbd> opens it full screen · <kbd>Tab</kbd> swaps top-down for 3D orbit</span>
         <span>Supplies</span><span>walk over a parachuted crate to grab it</span>

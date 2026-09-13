@@ -8,11 +8,15 @@ export class Input {
     this.keys = new Set();
     this.pressHandlers = new Map();
     this.releaseHandlers = new Map();
-    this.dragging = 0; // 0 = none, 1 = left (aim), 2 = right (free look)
+    this.dragging = 0; // 0 = none, 1 = right-click (aim), 2 = ctrl+right-click (free look)
     this.dx = 0;
     this.dy = 0;
     this.wheel = 0;
     this.enabled = true;
+    // Left mouse button is the fire trigger, set by whoever owns fire logic —
+    // kept separate from `dragging` since it no longer drives the camera.
+    this.onFireDown = null;
+    this.onFireUp = null;
 
     window.addEventListener('keydown', (e) => {
       if (e.repeat) return;
@@ -41,12 +45,20 @@ export class Input {
 
     domElement.addEventListener('pointerdown', (e) => {
       if (!this.enabled) return;
-      this.dragging = e.button === 2 ? 2 : 1;
+      if (e.button === 0) {
+        this.onFireDown?.(e);
+      } else if (e.button === 2) {
+        this.dragging = e.ctrlKey ? 2 : 1;
+      }
       domElement.setPointerCapture(e.pointerId);
     });
 
     domElement.addEventListener('pointerup', (e) => {
-      this.dragging = 0;
+      if (e.button === 0) {
+        this.onFireUp?.(e);
+      } else {
+        this.dragging = 0;
+      }
       if (domElement.hasPointerCapture(e.pointerId)) domElement.releasePointerCapture(e.pointerId);
     });
 

@@ -32,7 +32,6 @@ export const CFG = {
     jumpSpeed: 14,
     jumpForward: 6.5,        // horizontal shove, ~7.5 units of ground covered
     maxClimb: 1.15,          // max slope (rise/run) a blob can walk up
-    turnSpeed: 3.0,          // rad/s pivoting in place, firearms only (A/D)
     maxHealth: 100,
     // Coupled to jumpSpeed: a jump lands at jumpSpeed, so this has to clear it
     // with room to spare or every hop onto lower ground costs health. The gap
@@ -57,6 +56,10 @@ export const CFG = {
     extraShotTime: 14,       // clock granted for a second barrel
     suddenDeathTurn: 60,     // after this many turns the sea starts rising
     suddenDeathHealth: 25,   // everyone is knocked down to this when it triggers
+    // Real-time mode has no turn counter, so its own pacing is clocked in
+    // seconds of elapsed match time instead.
+    realtimeSuddenDeathAt: 240,  // seconds before the sea starts rising
+    realtimeCrateInterval: 9,    // seconds between supply-drop rolls
   },
   wind: {
     max: 7,

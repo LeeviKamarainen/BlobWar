@@ -291,6 +291,11 @@ export class Minimap {
       this.rebuildIn = 0.2;
     }
 
+    // Computed once per frame rather than per paint() call (paint runs twice
+    // when the full map is open) — see Game.highlightBlobs for what the two
+    // tiers mean in each mode.
+    this.hi = this.game.highlightBlobs();
+
     this.readKeys(dt);
     this.paint(this.smallCtx, this.smallSize, 1, 0, 0, true);
     if (this.full && this.mode === '2d') {
@@ -407,22 +412,34 @@ export class Minimap {
       }
     }
 
+    const hi = this.hi ?? { mine: null, watch: [] };
     for (const b of game.blobs) {
       if (!b.alive) continue;
       const px = X(b.position.x);
       const py = Y(b.position.z);
-      const active = b === game.activeBlob;
+      const isMine = b === hi.mine;
+      const isWatch = !isMine && hi.watch.includes(b);
 
-      if (active) {
+      if (isMine) {
+        // Tier 1 — your own current character: the strongest ring.
         ctx.beginPath();
-        ctx.arc(px, py, dot + 2 + pulse * (small ? 2 : 4), 0, TAU);
-        ctx.strokeStyle = `rgba(255,255,255,${0.25 + pulse * 0.5})`;
-        ctx.lineWidth = 1.5;
+        ctx.arc(px, py, dot + 3 + pulse * (small ? 2.4 : 5), 0, TAU);
+        ctx.strokeStyle = `rgba(255,255,255,${0.4 + pulse * 0.6})`;
+        ctx.lineWidth = small ? 2 : 2.6;
+        ctx.stroke();
+      } else if (isWatch) {
+        // Tier 2 — worth watching: real-time's enemies-in-motion, or (turn-
+        // based) a preview of your own next character. Subdued gold so it
+        // never competes with tier 1.
+        ctx.beginPath();
+        ctx.arc(px, py, dot + 1.5 + pulse * (small ? 1 : 2), 0, TAU);
+        ctx.strokeStyle = `rgba(255,209,102,${0.3 + pulse * 0.3})`;
+        ctx.lineWidth = small ? 1 : 1.4;
         ctx.stroke();
       }
 
       ctx.beginPath();
-      ctx.arc(px, py, active ? dot * 1.3 : dot, 0, TAU);
+      ctx.arc(px, py, isMine ? dot * 1.3 : dot, 0, TAU);
       ctx.fillStyle = b.team.def.css;
       ctx.fill();
       ctx.lineWidth = 1.5;
@@ -491,6 +508,7 @@ export class Minimap {
 
   updateBeacons() {
     const blobs = this.game.blobs;
+    const hi = this.hi ?? this.game.highlightBlobs();
     while (this.beacons.children.length < blobs.length) {
       const mesh = new THREE.Mesh(
         this.beaconGeo,
@@ -504,7 +522,7 @@ export class Minimap {
       if (!mesh.visible) return;
       mesh.position.set(b.position.x, b.position.y + 9, b.position.z);
       mesh.material.color.set(b.team.def.color);
-      mesh.material.opacity = b === this.game.activeBlob ? 0.85 : 0.4;
+      mesh.material.opacity = b === hi.mine ? 0.95 : hi.watch.includes(b) ? 0.65 : 0.35;
     });
   }
 

@@ -83,12 +83,12 @@ export class Net {
   }
 
   createRoom(name, teamCount, settings = {}) {
-    const { mapId, gravity, weapons, customMap } = settings;
+    const { mapId, gravity, weapons, customMap, realtime } = settings;
     // customMap.heights is a Float32Array — socket.io's JSON encoding won't
     // touch it kindly, so send a plain array over the wire.
     const wireCustomMap = customMap ? { ...customMap, heights: Array.from(customMap.heights) } : null;
     return new Promise((resolve) =>
-      this.socket.emit('create', { name, teamCount, mapId, gravity, weapons, customMap: wireCustomMap }, (res) => {
+      this.socket.emit('create', { name, teamCount, mapId, gravity, weapons, customMap: wireCustomMap, realtime }, (res) => {
         if (res?.ok) {
           this.room = res.room;
           this.slot = res.slot;

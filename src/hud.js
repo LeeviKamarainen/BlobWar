@@ -33,6 +33,13 @@ export class HUD {
     this.buildInventory();
   }
 
+  /** Real-time adds Space-to-jump and character-switching on top of the shared aim/fire scheme. */
+  setControlScheme(realtime) {
+    this.el.help.innerHTML = realtime
+      ? '<kbd>WASD</kbd> move · <kbd>Shift</kbd> switch character · <kbd>Space</kbd> jump · <kbd>right-drag</kbd> aim · <kbd>click</kbd> fire · <kbd>ctrl</kbd>+<kbd>right-drag</kbd> look · <kbd>wheel</kbd> zoom · <kbd>Tab</kbd> armory · <kbd>Q</kbd><kbd>E</kbd> cycle weapon · <kbd>M</kbd> map · <kbd>K</kbd> mute'
+      : '<kbd>WASD</kbd> move · <kbd>J</kbd> jump · <kbd>right-drag</kbd> aim · <kbd>click</kbd> fire · <kbd>ctrl</kbd>+<kbd>right-drag</kbd> look · <kbd>wheel</kbd> zoom · <kbd>Tab</kbd> armory · <kbd>Q</kbd><kbd>E</kbd> cycle weapon · <kbd>M</kbd> map · <kbd>N</kbd> skip · <kbd>K</kbd> mute';
+  }
+
   // --- armory ---------------------------------------------------------------
 
   /** @param {Set<string>|null} enabledIds  weapons this match allows; null = all. */
@@ -100,12 +107,13 @@ export class HUD {
     this.el.curIcon.textContent = w.icon;
     this.el.curName.textContent = w.name;
     this.el.curAmmo.textContent = count === Infinity ? 'unlimited' : `${count} left`;
+    const key = 'click';
     this.el.powerHint.innerHTML =
       w.delivery === 'burrow' || w.delivery === 'drill'
-        ? 'Hold <kbd>Space</kbd> to dig, release to stop'
+        ? `Hold <kbd>${key}</kbd> to dig, release to stop`
         : w.noCharge
-          ? 'Press <kbd>Space</kbd> to use'
-          : 'Hold <kbd>Space</kbd> to charge, release to fire';
+          ? `Press <kbd>${key}</kbd> to use`
+          : `Hold <kbd>${key}</kbd> to charge, release to fire`;
   }
 
   // --- roster ---------------------------------------------------------------
@@ -141,6 +149,17 @@ export class HUD {
       row.querySelector('.hp').textContent = blob.alive ? blob.health : '☠';
       row.classList.toggle('dead', !blob.alive);
       row.classList.toggle('active', blob === activeBlob);
+    }
+  }
+
+  /**
+   * Two-tier highlight matching the maps (see Game.highlightBlobs): `mine`
+   * gets the strong treatment, everything in `watch` gets the subdued one.
+   */
+  updateHighlights({ mine, watch }) {
+    for (const [blob, row] of this.rows) {
+      row.classList.toggle('mine-current', blob === mine);
+      row.classList.toggle('next-up', blob !== mine && watch.includes(blob));
     }
   }
 

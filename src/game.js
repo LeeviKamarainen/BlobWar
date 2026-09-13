@@ -8,7 +8,7 @@ import { Blob, separateBlobs } from './blob.js';
 import { Projectile, simulateTrajectory } from './projectile.js';
 import { Mine } from './mine.js';
 import { Crate, chooseDropSite, rollLoot } from './crate.js';
-import { CameraRig } from './cameraRig.js';
+import { CameraRig, AimState } from './cameraRig.js';
 import { FX } from './fx.js';
 import { planShot } from './ai.js';
 import { clamp } from './noise.js';
@@ -20,8 +20,68 @@ const STATE = {
   FLIGHT: 'flight',
   RETREAT: 'retreat',
   SETTLE: 'settle',
+  // Real-time mode: every team's current blob can move/aim/fire at once, for
+  // the whole match. There's no per-turn AIM/FLIGHT/RETREAT/SETTLE handoff —
+  // see updateRealtime() — so this one state covers the whole thing.
+  PLAY: 'play',
   OVER: 'over',
 };
+
+/**
+ * Real-time mode's per-team "what today's Game singular fields hold" — see
+ * Game.runInTeamContext. Turn-based mode never touches team.rt; these same
+ * names are the actual singular fields on Game while a team's turn/context is
+ * loaded (either because it's the local player's resting context, or because
+ * runInTeamContext just swapped it in).
+ */
+const RT_FIELDS = [
+  'selectedWeapon',
+  'power',
+  'charging',
+  'chargeDir',
+  'digging',
+  'digTimer',
+  'digTickAt',
+  'digDest',
+  'shotsLeft',
+  'fireCooldown',
+  'wallRotation',
+  'mapTarget',
+  'mapHomingTarget',
+  'burst',
+  'aiPhase',
+  'aiTimer',
+  'aiPlan',
+  'aiWalkTimer',
+  'aiCrate',
+];
+
+function makeTeamRT() {
+  return {
+    selectedWeapon: 'bazooka',
+    power: CFG.shot.minPower,
+    charging: false,
+    chargeDir: 1,
+    digging: false,
+    digTimer: 0,
+    digTickAt: 0,
+    digDest: null,
+    shotsLeft: 0,
+    fireCooldown: 0,
+    wallRotation: null,
+    mapTarget: null,
+    mapHomingTarget: null,
+    burst: null,
+    aiPhase: 'aim',
+    aiTimer: CFG.turn.aiThinkTime,
+    aiPlan: undefined,
+    aiWalkTimer: 0,
+    aiCrate: null,
+    // Stand-in for the real CameraRig while this team's context is loaded —
+    // see Game.runInTeamContext. Created lazily there.
+    shadowRig: null,
+  };
+}
 
 export class Game {
   constructor({ scene, camera, hud, audio, input }) {
@@ -65,6 +125,12 @@ export class Game {
     this.net = null;
     this.localTeams = null; // null = every non-AI team is played on this machine
 
+    // Real-time mode. See runInTeamContext/updateRealtime.
+    this.realtime = false;
+    this.myTeamIndex = null;
+    this.matchTime = 0;
+    this.crateTimer = 0;
+
     this.buildAimPreview();
     this.bindInput();
     this.hud.onPick = (id) => this.selectWeapon(id, true);
@@ -89,6 +155,8 @@ export class Game {
    *   gravity      numeric override for CFG.physics.gravity
    *   enabledWeapons  array of extra weapon ids allowed beyond the core two
    *                   (null/omitted = every weapon)
+   *   realtime     every team's current blob can act simultaneously, all
+   *                match — no turn order at all. See runInTeamContext.
    */
   start(opts = {}) {
     const {
@@ -102,10 +170,12 @@ export class Game {
       customMap = null,
       gravity = CFG.gravityPresets.find((p) => p.id === CFG.defaultGravityPreset).value,
       enabledWeapons = null,
+      realtime = false,
     } = opts;
 
     this.mode = mode;
     this.practice = mode === 'practice';
+    this.realtime = realtime && !this.practice;
     this.seed = seed;
     this.localTeams = localTeams;
     // An explicit array (even empty — everything turned off but the core two) is
@@ -143,7 +213,12 @@ export class Game {
       blobs: [],
       ammo: this.practice ? practiceAmmo() : startingAmmo(this.enabledWeapons),
       isAI: aiTeams.includes(i),
+      rt: this.realtime ? makeTeamRT() : null,
     }));
+
+    this.myTeamIndex = this.realtime
+      ? (localTeams?.[0] ?? this.teams.findIndex((t) => !t.isAI))
+      : null;
 
     // Interleave spawns so no squad gets the whole good half of the island.
     for (let i = 0; i < total; i++) {
@@ -156,6 +231,7 @@ export class Game {
       this.scene.add(blob.group);
     }
 
+    this.hud.setControlScheme(this.realtime);
     this.hud.buildInventory(this.practice ? null : this.enabledWeapons);
     this.hud.buildRoster(this.teams);
     this.minimap?.reset();
@@ -175,6 +251,15 @@ export class Game {
     this.burst = null;
     this.mapTarget = null;
     this.mapHomingTarget = null;
+    this.matchTime = 0;
+    this.crateTimer = CFG.turn.realtimeCrateInterval;
+
+    if (this.realtime) {
+      this.log(count > 2 ? `${count} squads land on the island — everybody moves.` : 'The island is contested. Go!');
+      this.beginRealtime();
+      return;
+    }
+
     this.log(
       this.practice
         ? 'Practice range — every weapon, unlimited ammo, nothing that can kill you.'
@@ -196,6 +281,48 @@ export class Game {
 
   playerControlled() {
     return this.activeBlob && this.activeBlob.alive && this.isLocalTurn();
+  }
+
+  /** Real-time only: the team this machine plays as. Null in turn-based matches. */
+  get myTeam() {
+    return this.myTeamIndex != null ? this.teams[this.myTeamIndex] : null;
+  }
+
+  /**
+   * Real-time mode's whole trick: every weapon/aim method on Game (fire,
+   * executeFire, updateAI, updatePreview, readMovement, …) reads and writes a
+   * handful of singular fields (selectedWeapon, power, charging, this.rig, …)
+   * because turn-based mode only ever has one team's turn loaded into them at
+   * once. Rather than rewrite all of that to take an explicit actor
+   * parameter, this temporarily loads a *different* team's saved state into
+   * those same fields, runs `fn`, and writes it back — so every existing
+   * method keeps working unchanged for whichever team is "current" for the
+   * duration of the call.
+   *
+   * The local player's own team is the resting state: its fields live
+   * directly on `this`/`this.rig` at all times between frames, so real input
+   * events (which only ever fire between frames) keep working with no swap at
+   * all. Only AI and remote teams ever actually get swapped in.
+   */
+  runInTeamContext(team, fn) {
+    if (!team || team === this.myTeam) return fn();
+    const rt = team.rt;
+    if (!rt.shadowRig) rt.shadowRig = new AimState();
+
+    const saved = { activeTeam: this.activeTeam, activeBlob: this.activeBlob, rig: this.rig };
+    for (const k of RT_FIELDS) saved[k] = this[k];
+
+    this.activeTeam = team;
+    this.activeBlob = team.blobs[this.cursor[team.index]] ?? null;
+    this.rig = rt.shadowRig;
+    for (const k of RT_FIELDS) this[k] = rt[k];
+
+    try {
+      return fn();
+    } finally {
+      for (const k of RT_FIELDS) rt[k] = this[k];
+      Object.assign(this, saved);
+    }
   }
 
   teardown() {
@@ -294,26 +421,15 @@ export class Game {
 
   bindInput() {
     const i = this.input;
-    i.onPress('space', () => {
-      if (!this.canAct()) return;
-      const w = WEAPONS[this.selectedWeapon];
-      if (w.delivery === 'burrow' || w.delivery === 'drill') {
-        this.startDig(w);
-      } else if (w.noCharge || w.delivery === 'teleport') {
-        this.power = w.power ?? CFG.shot.maxPower;
-        this.fire();
-      } else {
-        this.charging = true;
-        this.power = CFG.shot.minPower;
-        this.chargeDir = 1;
-      }
-    });
-    i.onRelease('space', () => {
-      if (this.charging) this.fire();
-      else if (this.digging) this.stopDig();
-    });
+    // Fire is the left mouse button in both modes; Space is always jump.
+    i.onFireDown = () => this.beginFireAction();
+    i.onFireUp = () => this.endFireAction();
+    i.onPress('space', () => this.tryJump());
     i.onPress('j', () => this.tryJump());
-    i.onPress('shift', () => this.tryJump());
+    i.onPress('shift', () => {
+      if (this.realtime) this.switchCharacter(1);
+      else this.tryJump();
+    });
     i.onPress('escape', () => {
       if (this.mapOpen) this.minimap.close();
       else if (this.hud.inventoryOpen) this.hud.toggleInventory(false);
@@ -346,6 +462,8 @@ export class Game {
       i.onPress(String(idx + 1), () => this.selectWeapon(id));
     });
     i.onPress('n', () => {
+      // "Hold position" ends a turn — meaningless once nobody's turn ever ends.
+      if (this.realtime) return;
       if (this.canAct()) {
         this.log(`${this.activeBlob.name} holds position.`);
         this.emit({ t: 'endTurn' });
@@ -364,7 +482,7 @@ export class Game {
   }
 
   tryJump() {
-    if (this.state !== STATE.AIM && this.state !== STATE.RETREAT) return;
+    if (this.state !== STATE.AIM && this.state !== STATE.RETREAT && this.state !== STATE.PLAY) return;
     // Same gate as firing: a panel that swallows movement has to swallow the
     // jump too, or you hop blind behind the armory or the map.
     if (!this.playerControlled() || this.hud.inventoryOpen || this.mapOpen) return;
@@ -377,12 +495,34 @@ export class Game {
 
   canAct() {
     return (
-      this.state === STATE.AIM &&
+      (this.state === STATE.AIM || this.state === STATE.PLAY) &&
       this.fireCooldown <= 0 &&
       this.playerControlled() &&
       !this.hud.inventoryOpen &&
       !this.mapOpen
     );
+  }
+
+  /** Left-click-down: start charging, digging, or fire instantly. */
+  beginFireAction() {
+    if (!this.canAct()) return;
+    const w = WEAPONS[this.selectedWeapon];
+    if (w.delivery === 'burrow' || w.delivery === 'drill') {
+      this.startDig(w);
+    } else if (w.noCharge || w.delivery === 'teleport') {
+      this.power = w.power ?? CFG.shot.maxPower;
+      this.fire();
+    } else {
+      this.charging = true;
+      this.power = CFG.shot.minPower;
+      this.chargeDir = 1;
+    }
+  }
+
+  /** Left-click-up: fire the charge, or stop digging. */
+  endFireAction() {
+    if (this.charging) this.fire();
+    else if (this.digging) this.stopDig();
   }
 
   teamState(team) {
@@ -400,11 +540,19 @@ export class Game {
   // online and offline can't drift apart in behaviour.
 
   emit(cmd) {
+    // Auto-tag which team this is: at the moment any local input fires,
+    // this.activeTeam is always the resting local-team context (see
+    // runInTeamContext) — never a team we've deliberately swapped in for
+    // an AI/remote tick. 'crate' is host-authoritative, not team-specific.
+    if (this.realtime && cmd.team === undefined && cmd.t !== 'crate' && this.activeTeam) {
+      cmd.team = this.activeTeam.index;
+    }
     this.applyCommand(cmd);
     if (this.net) this.net.sendCommand(cmd);
   }
 
   applyCommand(cmd) {
+    if (this.realtime) return this.applyRealtimeCommand(cmd);
     switch (cmd.t) {
       case 'weapon':
         this.setWeapon(cmd.id);
@@ -422,6 +570,56 @@ export class Game {
         this.applyPose(cmd);
         break;
     }
+  }
+
+  /**
+   * Real-time's command dispatch. Every command (except the host-authoritative
+   * 'crate') names the team it belongs to, so a command from an AI or remote
+   * team is applied with that team's own weapon/aim/power state loaded (see
+   * runInTeamContext) rather than whatever the local player happens to be
+   * doing right now.
+   */
+  applyRealtimeCommand(cmd) {
+    if (cmd.t === 'crate') {
+      this.spawnCrate(cmd.type, cmd.loot, new THREE.Vector3(cmd.x, cmd.y, cmd.z));
+      return;
+    }
+    const team = this.teams[cmd.team];
+    if (!team) return;
+    if (cmd.t === 'switch') return void this.applySwitchCommand(team, cmd);
+    if (cmd.t === 'pose') return void this.applyRealtimePose(team, cmd);
+    this.runInTeamContext(team, () => {
+      switch (cmd.t) {
+        case 'weapon':
+          this.setWeapon(cmd.id);
+          break;
+        case 'jump':
+          if (this.activeBlob && this.activeBlob.alive) this.activeBlob.jump(cmd.a);
+          break;
+        case 'fire':
+          this.executeFire(cmd);
+          break;
+      }
+    });
+  }
+
+  /** Real-time: another client switched which of their team's blobs is current. */
+  applySwitchCommand(team, cmd) {
+    const idx = team.blobs.findIndex((b) => b.id === cmd.blob);
+    if (idx >= 0) this.cursor[team.index] = idx;
+  }
+
+  /** Real-time: a remote team's current blob transform + aim, streamed continuously. */
+  applyRealtimePose(team, cmd) {
+    const b = team.blobs[this.cursor[team.index]];
+    if (!b || !b.alive) return;
+    b.netPose = { x: cmd.x, y: cmd.y, z: cmd.z };
+    b.facing = cmd.f;
+    if (!team.rt.shadowRig) team.rt.shadowRig = new AimState();
+    team.rt.shadowRig.aimYaw = cmd.yaw;
+    team.rt.shadowRig.aimPitch = cmd.pitch;
+    team.rt.power = cmd.p;
+    team.rt.charging = !!cmd.c;
   }
 
   /** Remote player's blob transform + aim, streamed while it's their turn. */
@@ -443,6 +641,7 @@ export class Game {
     const b = this.activeBlob;
     return {
       t: 'pose',
+      team: this.activeTeam.index,
       x: round2(b.position.x),
       y: round2(b.position.y),
       z: round2(b.position.z),
@@ -458,7 +657,7 @@ export class Game {
 
   /** Local intent: validate, then broadcast. */
   selectWeapon(id, fromMenu = false) {
-    if (this.state !== STATE.AIM || !this.playerControlled()) return;
+    if ((this.state !== STATE.AIM && this.state !== STATE.PLAY) || !this.playerControlled()) return;
     if (!WEAPONS[id]) return;
     if (this.activeTeam.ammo[id] <= 0) {
       this.hud.toast('OUT OF AMMO', '#ff6b6b', 800);
@@ -486,7 +685,7 @@ export class Game {
   }
 
   cycleWeapon(dir) {
-    if (this.state !== STATE.AIM || !this.playerControlled()) return;
+    if ((this.state !== STATE.AIM && this.state !== STATE.PLAY) || !this.playerControlled()) return;
     const usable = WEAPON_ORDER.filter((id) => this.activeTeam.ammo[id] > 0);
     if (!usable.length) return;
     const at = usable.indexOf(this.selectedWeapon);
@@ -594,6 +793,273 @@ export class Game {
       this.aiCrate = this.findAICrate(blob);
       if (!this.aiCrate) this.aiPhase = 'aim';
     }
+  }
+
+  // --- real-time mode ---------------------------------------------------
+
+  /** Real-time match setup — every team's first living blob goes live at once. */
+  beginRealtime() {
+    this.state = STATE.PLAY;
+    this.randomizeWind();
+
+    for (const team of this.teams) {
+      let blob = null;
+      for (let i = 0; i < team.blobs.length; i++) {
+        if (team.blobs[i].alive) {
+          blob = team.blobs[i];
+          this.cursor[team.index] = i;
+          break;
+        }
+      }
+      if (!blob) continue;
+
+      const enemy = this.nearestEnemy(blob);
+      const yaw = enemy
+        ? Math.atan2(enemy.position.x - blob.position.x, enemy.position.z - blob.position.z)
+        : blob.facing;
+
+      if (team === this.myTeam) {
+        this.activeTeam = team;
+        this.activeBlob = blob;
+        this.rig.aimYaw = yaw;
+        this.rig.aimPitch = 0.45;
+        this.rig.yawOffset = 0;
+        this.rig.pitchOffset = 0;
+        this.rig.setTarget(blob.position, true);
+        this.rig.targetDistance = 24;
+      } else {
+        if (!team.rt.shadowRig) team.rt.shadowRig = new AimState();
+        team.rt.shadowRig.aimYaw = yaw;
+        team.rt.shadowRig.aimPitch = 0.45;
+      }
+    }
+
+    const myBlob = this.myTeam?.blobs[this.cursor[this.myTeamIndex]];
+    this.hud.setTurn(this.myTeam, myBlob, false);
+    this.hud.setWind(this.wind);
+    this.hud.updateInventory(this.myTeam.ammo, this.selectedWeapon);
+    this.hud.toggleInventory(false);
+    this.hud.setControlsVisible(true);
+    this.hud.setTurnOwner(this.myTeam, true, null);
+    this.hud.setTimer(Infinity, 'off');
+    this.audio.turnStart();
+  }
+
+  /** The blob a team is currently acting through, auto-advancing off a dead one. */
+  currentBlobOf(team) {
+    const idx = this.cursor[team.index];
+    if (idx >= 0 && team.blobs[idx]?.alive) return team.blobs[idx];
+    for (let i = 0; i < team.blobs.length; i++) {
+      if (team.blobs[i].alive) {
+        this.cursor[team.index] = i;
+        return team.blobs[i];
+      }
+    }
+    return null;
+  }
+
+  /** Shift: cycle the local player's own current character, if they have a spare. */
+  switchCharacter(dir = 1) {
+    if (!this.realtime || !this.playerControlled()) return;
+    const team = this.activeTeam;
+    if (team.blobs.filter((b) => b.alive).length < 2) return;
+
+    let idx = this.cursor[team.index];
+    for (let step = 1; step <= team.blobs.length; step++) {
+      const next = (idx + dir * step + team.blobs.length) % team.blobs.length;
+      if (team.blobs[next].alive) {
+        idx = next;
+        break;
+      }
+    }
+    this.cursor[team.index] = idx;
+    const blob = team.blobs[idx];
+    this.activeBlob = blob;
+    this.charging = false;
+    this.digging = false;
+    this.shotsLeft = 0;
+    this.wallRotation = null;
+    this.mapTarget = null;
+    this.mapHomingTarget = null;
+    this.aimPreview.visible = false;
+    this.impactMarker.visible = false;
+    this.rig.setTarget(blob.position, true);
+    this.hud.setTurn(team, blob, false);
+    this.audio.bounce();
+    this.emit({ t: 'switch', blob: blob.id });
+  }
+
+  /** One real-time frame: every team's current blob acts at once. */
+  updateRealtime(dt) {
+    // Turn-based funnels a fatal hit through the SETTLE phase (one death at a
+    // time, camera following each) since only one blob can ever go down per
+    // turn. Real-time never enters SETTLE — it's STATE.PLAY for the whole
+    // match — so nothing was converting a 0-HP "pendingDeath" blob into an
+    // actual kill: it just sat there alive at 0 HP forever. Here a fatal hit
+    // kills immediately instead, chain reactions (death blast catching
+    // another blob) included.
+    for (const b of this.blobs) {
+      if (b.alive && b.pendingDeath) b.kill(true);
+    }
+
+    if (this.checkVictory()) return;
+    this.matchTime += dt;
+
+    if (!this.hud.inventoryOpen && !this.mapOpen) {
+      const blob = this.currentBlobOf(this.myTeam);
+      if (blob) {
+        this.activeBlob = blob;
+        if (this.fireCooldown > 0) this.fireCooldown = Math.max(0, this.fireCooldown - dt);
+        this.readMovement(blob);
+        if (!this.updateChargeOrDig(dt)) {
+          this.rig.setTarget(blob.position);
+          this.rig.followSpeed = 8;
+          this.updatePreview();
+        }
+        const frac = (this.power - CFG.shot.minPower) / (CFG.shot.maxPower - CFG.shot.minPower);
+        const digFrac = this.digTimer / CFG.dig.maxHold;
+        this.hud.setPower(
+          this.charging ? frac : this.digging ? digFrac : 0,
+          (this.rig.aimPitch * 180) / Math.PI,
+          this.charging || this.digging
+        );
+      }
+    }
+
+    // Every other team: AI teams think and act for themselves; remote human
+    // teams drive their blob through the generic netPose-lerp loop in step()
+    // and just need their cooldown ticked and any in-flight burst continued
+    // (a burst is only ever seeded by the one 'fire' command that started
+    // it — see launch() — every client, including this one, ticks its
+    // rounds forward locally off the same fixed timestep from there).
+    for (const team of this.teams) {
+      if (team === this.myTeam) continue;
+      const blob = this.currentBlobOf(team);
+      if (!blob) continue;
+      this.runInTeamContext(team, () => {
+        this.activeBlob = blob;
+        if (team.isAI) {
+          this.updateAI(dt);
+        } else if (this.fireCooldown > 0) {
+          this.fireCooldown = Math.max(0, this.fireCooldown - dt);
+        }
+        if (this.burst) {
+          this.burst.t -= dt;
+          if (this.burst.t <= 0) this.fireBurstRound();
+        }
+      });
+    }
+
+    this.updateSuddenDeathRealtime(dt);
+    this.maybeDropCrateRealtime(dt);
+  }
+
+  /** Shared charge/dig tick, used by turn-based updateAim and updateRealtime alike. */
+  updateChargeOrDig(dt) {
+    if (this.charging) {
+      this.power += CFG.shot.chargeRate * dt * this.chargeDir;
+      if (this.power >= CFG.shot.maxPower) {
+        this.power = CFG.shot.maxPower;
+        this.chargeDir = -1;
+      } else if (this.power <= CFG.shot.minPower) {
+        this.power = CFG.shot.minPower;
+        this.chargeDir = 1;
+      }
+    } else if (this.digging) {
+      this.digTimer = Math.min(CFG.dig.maxHold, this.digTimer + dt);
+      // Actually carve a bit more every ~0.25s instead of only charging up
+      // silently and dumping the whole shaft/pit out on release — burrow
+      // and drill scale their own effect by the current (still-growing)
+      // hold fraction, so each tick pushes the blob a little further down
+      // (burrow) or bores a little deeper (drill) while Space stays held.
+      if (this.digTimer - this.digTickAt >= 0.25) {
+        this.digTickAt = this.digTimer;
+        const w = WEAPONS[this.selectedWeapon];
+        const frac = this.digTimer / CFG.dig.maxHold;
+        if (w.delivery === 'burrow') this.burrowSelf(w, frac, true);
+        else this.drillShaft(w, frac, true, this.digDest);
+      }
+      if (this.digTimer >= CFG.dig.maxHold) {
+        this.stopDig();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Real-time sudden death: elapsed match time instead of a turn count. */
+  updateSuddenDeathRealtime(dt) {
+    if (this.matchTime < CFG.turn.realtimeSuddenDeathAt) return;
+    if (!this.suddenDeath) {
+      this.suddenDeath = true;
+      for (const b of this.blobs) {
+        if (!b.alive) continue;
+        b.health = Math.min(b.health, CFG.turn.suddenDeathHealth);
+        b.drawLabel();
+      }
+      this.log('SUDDEN DEATH — the tide is coming in.');
+      this.hud.toast('SUDDEN DEATH', '#ff6b6b', 2200);
+      this.audio.siren();
+    } else {
+      CFG.terrain.waterLevel += (CFG.terrain.waterRise / CFG.turn.time) * dt;
+    }
+  }
+
+  /**
+   * Real-time supply drops. Rolled on a timer instead of once per turn. Online,
+   * only the host rolls — the shared-seed RNG stream that keeps craters and
+   * turn-scoped rolls in sync across clients only works when exactly one actor
+   * draws from it at a time, which a turn guaranteed and real-time no longer
+   * does — so the host resolves the drop once and broadcasts the concrete
+   * result instead of asking every client to (possibly divergently) roll it.
+   */
+  maybeDropCrateRealtime(dt) {
+    if (this.crates.length >= CFG.crates.max) return;
+    this.crateTimer -= dt;
+    if (this.crateTimer > 0) return;
+    this.crateTimer = CFG.turn.realtimeCrateInterval;
+    if (this.net && !this.net.isHost) return;
+    if (!this.rng.chance(CFG.crates.chance)) return;
+    const site = chooseDropSite(this);
+    if (!site) return;
+    const wounded = this.blobs.some((b) => b.alive && b.health < CFG.blob.maxHealth * 0.7);
+    const type = this.rng.chance(wounded ? 0.34 : 0.18) ? 'health' : 'weapon';
+    const loot = type === 'weapon' ? rollLoot(this.rng, this.enabledWeapons) : null;
+    this.emit({
+      t: 'crate',
+      type,
+      loot,
+      x: round2(site.x),
+      y: round2(site.y),
+      z: round2(site.z),
+    });
+  }
+
+  spawnCrate(type, loot, site) {
+    if (this.crates.length >= CFG.crates.max) return;
+    const crate = new Crate(this, type, site, loot);
+    this.crates.push(crate);
+    this.hud.toast(type === 'health' ? 'MEDKIT INBOUND' : 'SUPPLY DROP', '#cfe0f5', 1100);
+  }
+
+  /**
+   * Which blobs the maps/roster should highlight: `mine` gets the strong
+   * ring, `watch` (an array) gets the subdued one. What they mean depends on
+   * the mode — see the plan doc / minimap.js for the reasoning.
+   */
+  highlightBlobs() {
+    if (this.realtime) {
+      const myBlob = this.myTeam ? this.myTeam.blobs[this.cursor[this.myTeamIndex]] : null;
+      const watch = this.teams
+        .filter((t) => t !== this.myTeam)
+        .map((t) => t.blobs[this.cursor[t.index]])
+        .filter((b) => b && b.alive);
+      return { mine: myBlob && myBlob.alive ? myBlob : null, watch };
+    }
+    if (this.isLocalTurn()) return { mine: this.activeBlob, watch: [] };
+    const myTeam = this.teams.find((t) => !t.isAI && (!this.localTeams || this.localTeams.includes(t.index)));
+    const next = myTeam ? myTeam.blobs[this.cursor[myTeam.index]] : null;
+    return { mine: null, watch: next && next.alive ? [next] : [] };
   }
 
   /** True when this machine is responsible for driving the current turn. */
@@ -822,7 +1288,7 @@ export class Game {
 
   /** Local/AI intent: package the shot as a command so remotes reproduce it. */
   fire() {
-    if (this.state !== STATE.AIM) return;
+    if (this.state !== STATE.AIM && this.state !== STATE.PLAY) return;
     if (!this.playerControlled() && !this.activeTeam.isAI) return;
     const weapon = WEAPONS[this.selectedWeapon];
     if (this.shotsLeft <= 0 && this.activeTeam.ammo[weapon.id] <= 0) return;
@@ -862,7 +1328,7 @@ export class Game {
     // Tolerate an observer that drifted into settle: the shot is authoritative,
     // so pull the state back rather than dropping it.
     if (this.state === STATE.SETTLE && this.net && !this.isLocalTurn()) this.state = STATE.AIM;
-    if (this.state !== STATE.AIM) return;
+    if (this.state !== STATE.AIM && this.state !== STATE.PLAY) return;
     this.selectedWeapon = cmd.w;
     this.rig.aimYaw = cmd.yaw;
     this.rig.aimPitch = cmd.pitch;
@@ -948,11 +1414,25 @@ export class Game {
     this.log(`${blob.name} uses the ${weapon.name}.`);
 
     if (this.practice) {
-      // Real-time range: no turn handoff, just a short cooldown before the
+      // Practice range: no turn handoff, just a short cooldown before the
       // next shot — stay in AIM so movement and the camera never leave your
       // hands, and projectiles/explosions resolve in the background.
       this.state = STATE.AIM;
       this.fireCooldown = CFG.practice.fireCooldown;
+      return;
+    }
+
+    if (this.realtime) {
+      // No turn to hand off — every other team keeps playing regardless of
+      // what this shot was. Just rate-limit this team's next shot: a weapon
+      // that used to buy a turn-based RUN! window now just makes you wait
+      // that long before firing again; everything else gets the practice
+      // range's default cooldown so charge-and-release can't be spammed.
+      this.fireCooldown = (weapon.retreat ?? 0) > 0 ? weapon.retreat : CFG.practice.fireCooldown;
+      if (this.activeTeam === this.myTeam) {
+        this.rig.followSpeed = 9;
+        if (usedProjectile) this.rig.targetDistance = 28;
+      }
       return;
     }
 
@@ -970,12 +1450,9 @@ export class Game {
   }
 
   launch(weapon, dir) {
-    const origin = this.shotOrigin(this.activeBlob, dir);
     if (weapon.burst) {
       this.burst = {
         weapon,
-        dir: dir.clone(),
-        origin: origin.clone(),
         remaining: weapon.burst.count,
         interval: weapon.burst.interval,
         spread: weapon.burst.spread,
@@ -983,6 +1460,7 @@ export class Game {
       };
       this.fireBurstRound();
     } else {
+      const origin = this.shotOrigin(this.activeBlob, dir);
       // Lock chosen by the shooter and carried in the command, so every client
       // guides the missile at the same blob.
       const target = weapon.homing ? (this.homingTarget ?? this.pickHomingTarget(dir)) : null;
@@ -997,23 +1475,35 @@ export class Game {
     if (!b || b.remaining <= 0) return;
     b.remaining--;
     b.t = b.interval;
-    const dir = b.dir
-      .clone()
-      .add(
-        new THREE.Vector3(
+    b.round = (b.round ?? 0) + 1;
+    // Read the live aim every round instead of the direction frozen at the
+    // trigger pull, so full-auto fire tracks the mouse in real time rather
+    // than spraying the whole burst at wherever you were originally aiming.
+    //
+    // Real-time mode can have several teams mid-burst at once, each ticked
+    // independently by its own client — the shared this.rng stream that
+    // keeps turn-based spread in sync across machines only works because a
+    // turn guarantees exactly one actor draws from it at a time. A pure hash
+    // of the shot's own identity (seed/blob/round) sidesteps that: every
+    // client reaches the same round number for the same blob independently
+    // (same burst.count/interval, same fixed timestep), so it reproduces
+    // identical spread with no shared mutable state at all.
+    const jitter = this.realtime
+      ? new THREE.Vector3(
+          hashSpread(this.seed, this.activeBlob.id, b.round, 1) * (b.spread / 2),
+          hashSpread(this.seed, this.activeBlob.id, b.round, 2) * (b.spread / 2),
+          hashSpread(this.seed, this.activeBlob.id, b.round, 3) * (b.spread / 2)
+        )
+      : new THREE.Vector3(
           this.rng.spread(b.spread / 2),
           this.rng.spread(b.spread / 2),
           this.rng.spread(b.spread / 2)
-        )
-      )
-      .normalize();
-    this.spawnProjectile(
-      b.weapon,
-      b.origin.clone(),
-      dir.multiplyScalar(b.weapon.power ?? this.power),
-      this.activeBlob,
-      { silent: b.remaining % 2 !== 0 }
-    );
+        );
+    const dir = this.rig.aimDirection().add(jitter).normalize();
+    const origin = this.shotOrigin(this.activeBlob, dir);
+    this.spawnProjectile(b.weapon, origin, dir.multiplyScalar(b.weapon.power ?? this.power), this.activeBlob, {
+      silent: b.remaining % 2 !== 0,
+    });
     if (b.remaining <= 0) this.burst = null;
   }
 
@@ -1410,25 +1900,28 @@ export class Game {
     if (!this.hud.inventoryOpen && !this.mapOpen) {
       const weapon = WEAPONS[this.selectedWeapon];
       const aimingNow = this.input.dragging === 1;
-      if (aimingNow && !this.wasAiming && this.state === STATE.AIM && this.playerControlled()) {
-        // Left button just went down: always start the aim fresh from the
-        // blob's own facing, not wherever aimYaw was last left. Without this,
-        // free-looking far away with a right-drag and then left-clicking made
-        // the very next drag look like it snapped the camera off wildly,
-        // because it was really just catching aimYaw up to a view that had
-        // moved on without it.
-        this.rig.aimYaw = this.activeBlob.facing;
+      const wasAiming = this.wasAiming;
+      const inPlay = this.state === STATE.AIM || this.state === STATE.PLAY;
+      if (aimingNow && !wasAiming && inPlay && this.playerControlled()) {
+        // Right button just went down: start the aim fresh from wherever the
+        // camera is already looking (view yaw, which folds in any ctrl+right
+        // free look) rather than the blob's own facing. The blob's facing can
+        // diverge from the view — it follows movement direction while
+        // walking or strafing — so snapping aim to it instead yanked the
+        // camera around to face the blob rather than holding still where the
+        // player was already looking.
+        this.rig.aimYaw = this.rig.viewYaw;
         this.rig.yawOffset = 0;
         this.rig.pitchOffset = 0;
       }
       this.wasAiming = aimingNow;
       this.aiming = aimingNow;
-      this.rig.handleDrag(this.input.takeDrag(), { lockYaw: weapon?.category === 'gun' });
+      this.rig.handleDrag(this.input.takeDrag());
       const wheel = this.input.takeWheel();
       // While actually lining up a wall, the scroll wheel spins its facing
       // instead of zooming — camera zoom during that window isn't as useful
       // as being able to rotate the ridge to match the terrain.
-      if (wheel && weapon?.delivery === 'build' && this.state === STATE.AIM && (this.aiming || this.charging)) {
+      if (wheel && weapon?.delivery === 'build' && inPlay && (this.aiming || this.charging)) {
         if (this.wallRotation == null) this.wallRotation = this.defaultWallRotation();
         this.wallRotation += wheel * WALL_ROTATE_STEP;
       } else if (wheel) {
@@ -1458,6 +1951,7 @@ export class Game {
     this.rig.update(dt);
     this.minimap?.update(dt);
     this.hud.updateRoster(this.activeBlob);
+    this.hud.updateHighlights(this.highlightBlobs());
   }
 
   /** One fixed simulation slice. */
@@ -1474,6 +1968,9 @@ export class Game {
         break;
       case STATE.SETTLE:
         this.updateSettle(dt);
+        break;
+      case STATE.PLAY:
+        this.updateRealtime(dt);
         break;
     }
 
@@ -1501,6 +1998,17 @@ export class Game {
 
     for (const b of this.blobs) b.update(dt);
 
+    // Firearms: the body/gun visually tracks the live mouse aim while you're
+    // actively aiming. This has to happen after the blob update above —
+    // walk() there re-derives facing from the movement direction, which
+    // would otherwise spin the model away from the barrel while strafing.
+    if ((this.state === STATE.AIM || this.state === STATE.PLAY) && this.isLocalTurn()) {
+      const blob = this.activeBlob;
+      if (blob.alive && this.aiming && WEAPONS[this.selectedWeapon].category === 'gun') {
+        blob.facing = this.rig.aimYaw;
+      }
+    }
+
     // A remotely driven blob is interpolated toward the streamed transform
     // rather than simulated, so walking can never drift between clients.
     for (const b of this.blobs) {
@@ -1519,8 +2027,15 @@ export class Game {
       this.rig.aimPitch += (this.rig.netAimPitch - this.rig.aimPitch) * k;
     }
 
-    // Publish our own blob while it's our turn.
-    if (this.net && this.isLocalTurn() && (this.state === STATE.AIM || this.state === STATE.RETREAT)) {
+    // Publish our own blob while it's our turn. Kept alive through a burst
+    // even once state has moved on to FLIGHT, so an observer's aim keeps
+    // tracking the live mouse for the rest of a full-auto spray instead of
+    // freezing on the direction of the first round.
+    if (
+      this.net &&
+      this.isLocalTurn() &&
+      (this.state === STATE.AIM || this.state === STATE.RETREAT || this.state === STATE.PLAY || this.burst)
+    ) {
       this.poseTimer -= dt;
       if (this.poseTimer <= 0) {
         this.poseTimer = 1 / 15;
@@ -1538,12 +2053,7 @@ export class Game {
     if (this.activeTeam.isAI) {
       if (this.iAmActor()) this.updateAI(dt);
     } else if (this.isLocalTurn() && !this.hud.inventoryOpen && !this.mapOpen) {
-      this.readMovement(blob, dt);
-      // Firearms still turn freely with A/D at any time (that's just moving),
-      // but the camera only follows that turn while you're holding the aim
-      // button — otherwise walking a corner span whipped the camera around
-      // with you even when you had no intention of aiming yet.
-      if (WEAPONS[this.selectedWeapon].category === 'gun' && this.aiming) this.rig.aimYaw = blob.facing;
+      this.readMovement(blob);
       if (this.charging) {
         // Bounces between min and max instead of maxing out and auto-firing —
         // release has to be timed, same as the arc/impact preview it drives.
@@ -1615,7 +2125,7 @@ export class Game {
     const blob = this.activeBlob;
     this.retreatTimer -= dt;
     this.hud.setTimer(this.retreatTimer, 'retreat');
-    if (blob.alive && this.isLocalTurn() && !this.mapOpen) this.readMovement(blob, dt);
+    if (blob.alive && this.isLocalTurn() && !this.mapOpen) this.readMovement(blob);
     this.rig.setTarget(blob.position);
     if (this.retreatTimer <= 0 || !blob.alive) {
       blob.moveInput.set(0, 0);
@@ -1624,7 +2134,7 @@ export class Game {
     }
   }
 
-  readMovement(blob, dt) {
+  readMovement(blob) {
     const i = this.input;
     let f = 0;
     let r = 0;
@@ -1632,23 +2142,6 @@ export class Game {
     if (i.down('s', 'down')) f -= 1;
     if (i.down('d', 'right')) r += 1;
     if (i.down('a', 'left')) r -= 1;
-
-    const weapon = WEAPONS[this.selectedWeapon];
-    if (weapon.category === 'gun' && this.aiming) {
-      // Firearms, but only while the aim button is actually held: A/D turns
-      // the blob itself — in place if you're not also walking — and the
-      // mouse is left with only elevation. Outside of that, movement below
-      // is the normal camera-relative kind, same as every other weapon, so
-      // strafing and walking backward keep working while you're just
-      // repositioning rather than lining up a shot.
-      if (r) blob.facing += r * CFG.blob.turnSpeed * dt;
-      if (!f) {
-        blob.moveInput.set(0, 0);
-        return;
-      }
-      blob.moveInput.set(Math.sin(blob.facing) * f, Math.cos(blob.facing) * f);
-      return;
-    }
 
     if (!f && !r) {
       blob.moveInput.set(0, 0);
@@ -1666,7 +2159,14 @@ export class Game {
 
   updateAI(dt) {
     const blob = this.activeBlob;
-    this.hud.setPower(0, (this.rig.aimPitch * 180) / Math.PI, false);
+    // Real-time can have several AI teams thinking at once, all sharing this
+    // one Game — but the HUD widgets below are the single local player's
+    // power meter/inventory/preview, so only the AI standing in as *my* team's
+    // context (never true in turn-based, where isLocalTurn() already keeps
+    // AI off this path) gets to touch them.
+    const showOnHud = !this.realtime || this.activeTeam === this.myTeam;
+    if (showOnHud) this.hud.setPower(0, (this.rig.aimPitch * 180) / Math.PI, false);
+    if (this.fireCooldown > 0) this.fireCooldown = Math.max(0, this.fireCooldown - dt);
 
     // Phase 1: waddle over to a nearby supply crate if there is one.
     if (this.aiPhase === 'walk') {
@@ -1696,7 +2196,7 @@ export class Game {
       this.aiPlan = planShot(this, blob) || null;
       if (this.aiPlan) {
         this.selectedWeapon = this.aiPlan.weaponId;
-        this.hud.updateInventory(this.activeTeam.ammo, this.selectedWeapon);
+        if (showOnHud) this.hud.updateInventory(this.activeTeam.ammo, this.selectedWeapon);
       }
     }
 
@@ -1705,19 +2205,33 @@ export class Game {
       this.rig.aimYaw += shortestAngle(this.rig.aimYaw, this.aiPlan.yaw) * k;
       this.rig.aimPitch += (this.aiPlan.pitch - this.rig.aimPitch) * k;
       this.power = this.aiPlan.power;
-      this.updatePreview(0.55);
+      if (showOnHud) this.updatePreview(0.55);
     }
 
     if (this.aiTimer <= 0) {
       if (!this.aiPlan) {
         this.log(`${blob.name} can't find a shot.`);
-        this.endTurn();
+        // Turn-based: nothing to shoot with, so pass. Real-time: there's no
+        // turn to end — just try again once it's had time to reconsider.
+        if (this.realtime) this.aiTimer = CFG.turn.aiThinkTime;
+        else this.endTurn();
         return;
       }
+      // Real-time only: the post-shot cooldown from the last round (see
+      // executeFire) has to run out before firing again, same as it does for
+      // the human player.
+      if (this.realtime && this.fireCooldown > 0) return;
       this.rig.aimYaw = this.aiPlan.yaw;
       this.rig.aimPitch = this.aiPlan.pitch;
       this.power = this.aiPlan.power;
       this.fire();
+      if (this.realtime) {
+        // Re-think for the next shot instead of firing this stale plan again
+        // next frame — turn-based never reaches a second shot here since the
+        // turn ends (or, at most, a fresh beginTurn resets all of this).
+        this.aiPlan = undefined;
+        this.aiTimer = CFG.turn.aiThinkTime;
+      }
     }
   }
 
@@ -1983,4 +2497,19 @@ function shortestAngle(from, to) {
   if (d > Math.PI) d -= Math.PI * 2;
   if (d < -Math.PI) d += Math.PI * 2;
   return d;
+}
+
+/**
+ * Pure deterministic pseudo-random value in [-1, 1] — a murmur3-style integer
+ * hash of the inputs, not a stream. See fireBurstRound: real-time mode needs
+ * spread jitter that every client can reproduce independently, without a
+ * shared mutable RNG whose draw order can no longer be guaranteed once more
+ * than one team can be firing at the same time.
+ */
+function hashSpread(seed, blobId, round, axis) {
+  let h = (seed ^ Math.imul(blobId + 1, 2654435761) ^ Math.imul(round, 2246822519) ^ Math.imul(axis, 3266489917)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 2246822519);
+  h = Math.imul(h ^ (h >>> 13), 3266489917);
+  h ^= h >>> 16;
+  return ((h >>> 0) / 4294967295) * 2 - 1;
 }

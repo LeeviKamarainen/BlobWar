@@ -4,10 +4,10 @@ import { clamp } from './noise.js';
 /**
  * Orbit rig that doubles as the aiming device.
  *
- * `aimYaw` / `aimPitch` are the gun. Left-drag moves them (horizontal = turn,
+ * `aimYaw` / `aimPitch` are the gun. Right-drag moves them (horizontal = turn,
  * vertical = elevation) and the camera follows so you're always looking down the
- * barrel. Right-drag adds a temporary look-around offset that doesn't disturb
- * the aim.
+ * barrel. Ctrl+right-drag adds a temporary look-around offset that doesn't
+ * disturb the aim.
  */
 export class CameraRig {
   constructor(camera, terrain) {
@@ -75,15 +75,10 @@ export class CameraRig {
     this.viewAimPitch = this.aimPitch;
   }
 
-  /**
-   * `lockYaw` is set while a firearm is equipped: those weapons get their
-   * horizontal aim from the blob's own facing (turned with A/D) instead of the
-   * mouse, so the drag is left with only elevation to give it.
-   */
-  handleDrag({ dx, dy, button }, { lockYaw = false } = {}) {
+  handleDrag({ dx, dy, button }) {
     if (!button) return;
     if (button === 1) {
-      if (!lockYaw) this.aimYaw -= dx * 0.005;
+      this.aimYaw -= dx * 0.005;
       this.aimPitch = clamp(this.aimPitch - dy * 0.004, -0.35, 1.25);
     } else {
       this.yawOffset = clamp(this.yawOffset - dx * 0.005, -2.2, 2.2);
@@ -106,8 +101,7 @@ export class CameraRig {
 
   /** Unit vector the current shot would travel along. */
   aimDirection(out = new THREE.Vector3()) {
-    const cp = Math.cos(this.aimPitch);
-    return out.set(Math.sin(this.aimYaw) * cp, Math.sin(this.aimPitch), Math.cos(this.aimYaw) * cp);
+    return aimDirectionFrom(this.aimYaw, this.aimPitch, out);
   }
 
   setTarget(v, snap = false) {
@@ -174,4 +168,36 @@ function shortestAngle(from, to) {
   if (d > Math.PI) d -= Math.PI * 2;
   if (d < -Math.PI) d += Math.PI * 2;
   return d;
+}
+
+function aimDirectionFrom(yaw, pitch, out) {
+  const cp = Math.cos(pitch);
+  return out.set(Math.sin(yaw) * cp, Math.sin(pitch), Math.cos(yaw) * cp);
+}
+
+/**
+ * Non-visual stand-in for CameraRig, used by Game.runInTeamContext while an
+ * AI or remote team's turn state is loaded in place of the local player's.
+ * Real-time mode needs somewhere for that team's aim to live and its
+ * aimDirection() math to run — without it touching the one actual camera.
+ */
+export class AimState {
+  constructor() {
+    this.aimYaw = 0;
+    this.aimPitch = 0.45;
+    this.yawOffset = 0;
+    this.pitchOffset = 0;
+    this.followSpeed = 6;
+    this.targetDistance = 24;
+  }
+  aimDirection(out = new THREE.Vector3()) {
+    return aimDirectionFrom(this.aimYaw, this.aimPitch, out);
+  }
+  setTarget() {}
+  addShake() {}
+  zoom() {}
+  recenter() {
+    this.yawOffset = 0;
+    this.pitchOffset = 0;
+  }
 }

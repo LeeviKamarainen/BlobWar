@@ -87,6 +87,12 @@
       .blobRow.dead { opacity: 0.32; text-decoration: line-through; }
       .blobRow.active .nm { color: #fff; font-weight: 700; }
       .blobRow .hp { width: 26px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+      /* Tier 1: your own current character. Tier 2: real-time's enemies-in-motion,
+         or (turn-based) a preview of your own next character. */
+      .blobRow.mine-current { box-shadow: inset 3px 0 0 #fff; background: rgba(255,255,255,0.06); }
+      .blobRow.mine-current .nm { color: #fff; font-weight: 700; }
+      .blobRow.next-up { box-shadow: inset 3px 0 0 #ffd166; }
+      .blobRow.next-up .nm { color: #ffd166; }
 
       /* ---- minimap ---- */
       #minimap {
@@ -380,13 +386,13 @@
       <div id="powerBox">
         <div id="angleRead">angle 0° · power 0%</div>
         <div id="powerTrack"><div id="powerFill"></div></div>
-        <div id="powerHint">Hold <kbd>Space</kbd> to charge, release to fire</div>
+        <div id="powerHint">Hold <kbd>click</kbd> to charge, release to fire</div>
       </div>
 
       <div id="help">
-        <kbd>WASD</kbd> move · <kbd>J</kbd> jump · <kbd>drag</kbd> aim · <kbd>right-drag</kbd> look ·
-        <kbd>wheel</kbd> zoom · <kbd>Tab</kbd> armory · <kbd>Q</kbd><kbd>E</kbd> cycle weapon ·
-        <kbd>M</kbd> map · <kbd>N</kbd> skip · <kbd>K</kbd> mute
+        <kbd>WASD</kbd> move · <kbd>J</kbd> jump · <kbd>right-drag</kbd> aim · <kbd>click</kbd> fire ·
+        <kbd>ctrl</kbd>+<kbd>right-drag</kbd> look · <kbd>wheel</kbd> zoom · <kbd>Tab</kbd> armory ·
+        <kbd>Q</kbd><kbd>E</kbd> cycle weapon · <kbd>M</kbd> map · <kbd>N</kbd> skip · <kbd>K</kbd> mute
       </div>
 
       <div id="log"></div>

@@ -88,6 +88,7 @@ function publicRoom(room) {
     mapId: room.mapId,
     gravity: room.gravity,
     weapons: room.weapons,
+    realtime: room.realtime,
     // customMap deliberately isn't here: it's tens of KB and only needed once,
     // by the 'start' payload, not on every lobby broadcast.
     players: room.players.map((p) => ({
@@ -130,7 +131,9 @@ io.on('connection', (socket) => {
       io.to(room.code).emit('peerLeft', { slot: me.slot, name: me.name, started: room.started });
       broadcastRoom(room);
       // If the absent player was mid-turn, ask the host to move things along.
-      if (room.started && room.turnSlot === me.slot) {
+      // Real-time has no "whose turn" to force along — that team's blob just
+      // stops receiving updates and sits still.
+      if (room.started && !room.realtime && room.turnSlot === me.slot) {
         const host = room.players.find((p) => p.id === room.hostId && p.connected);
         if (host) io.to(host.socketId).emit('forceAdvance', { slot: me.slot });
       }
@@ -139,7 +142,7 @@ io.on('connection', (socket) => {
     me = null;
   };
 
-  socket.on('create', ({ name, teamCount, mapId, gravity, weapons, customMap }, ack) => {
+  socket.on('create', ({ name, teamCount, mapId, gravity, weapons, customMap, realtime }, ack) => {
     const code = makeCode();
     const sanitizedCustomMap = mapId === CUSTOM_MAP_ID ? sanitizeCustomMap(customMap) : null;
     room = {
@@ -150,6 +153,7 @@ io.on('connection', (socket) => {
       gravity: sanitizeGravity(gravity),
       weapons: sanitizeWeapons(weapons),
       customMap: sanitizedCustomMap,
+      realtime: !!realtime,
       players: [],
       started: false,
       hostId: socket.id,
@@ -206,6 +210,7 @@ io.on('connection', (socket) => {
       gravity: room.gravity,
       weapons: room.weapons,
       customMap: room.customMap,
+      realtime: room.realtime,
     });
     console.log(`[blobwar] room ${room.code} started with ${room.players.length} players`);
   });
