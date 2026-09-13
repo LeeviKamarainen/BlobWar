@@ -174,6 +174,7 @@ export const WEAPONS = {
     damage: 115,
     radius: 14,
     wind: 0.3,
+    chant: true,
     shape: 'melon',
     color: 0x8ce36b,
     scale: 0.75,

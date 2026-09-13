@@ -42,6 +42,7 @@ export class Game {
     this.time = 0;
     this.shotsLeft = 0;
     this.burst = null;
+    this.fireCooldown = 0;
     this.previewImpact = null;
     this.rng = new RNG(1);
     this.poseTimer = 0;
@@ -377,6 +378,7 @@ export class Game {
   canAct() {
     return (
       this.state === STATE.AIM &&
+      this.fireCooldown <= 0 &&
       this.playerControlled() &&
       !this.hud.inventoryOpen &&
       !this.mapOpen
@@ -554,6 +556,7 @@ export class Game {
     this.power = CFG.shot.minPower;
     this.shotsLeft = 0;
     this.burst = null;
+    this.fireCooldown = 0;
     this.lastBlast = null;
     this.explodePause = 0;
     this.lastTickSecond = Math.ceil(this.timer);
@@ -944,6 +947,15 @@ export class Game {
     blob.moveInput.set(0, 0);
     this.log(`${blob.name} uses the ${weapon.name}.`);
 
+    if (this.practice) {
+      // Real-time range: no turn handoff, just a short cooldown before the
+      // next shot — stay in AIM so movement and the camera never leave your
+      // hands, and projectiles/explosions resolve in the background.
+      this.state = STATE.AIM;
+      this.fireCooldown = CFG.practice.fireCooldown;
+      return;
+    }
+
     const retreat = weapon.retreat ?? 0;
     if (retreat > 0 && blob.alive) {
       this.state = STATE.RETREAT;
@@ -1281,10 +1293,10 @@ export class Game {
   }
 
   /** Blast: carve the ground, hurt and fling everything nearby. */
-  detonate(pos, radius, damage, owner, sourceName = 'an explosion') {
+  detonate(pos, radius, damage, owner, sourceName = 'an explosion', opts = {}) {
     this.terrain.carve(pos.x, pos.y, pos.z, radius);
     this.fx.explosion(pos, radius);
-    this.audio.explosion(clamp(radius / 6, 0.5, 1.8));
+    if (!opts.silentBoom) this.audio.explosion(clamp(radius / 6, 0.5, 1.8));
 
     const camDist = this.camera.position.distanceTo(pos);
     this.rig?.addShake(clamp((radius * 12) / Math.max(8, camDist), 0.1, 1.8));
@@ -1520,6 +1532,8 @@ export class Game {
   updateAim(dt) {
     const blob = this.activeBlob;
     if (!blob.alive) return void this.endTurn();
+
+    if (this.fireCooldown > 0) this.fireCooldown = Math.max(0, this.fireCooldown - dt);
 
     if (this.activeTeam.isAI) {
       if (this.iAmActor()) this.updateAI(dt);

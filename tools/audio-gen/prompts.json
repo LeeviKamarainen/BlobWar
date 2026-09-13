@@ -1,0 +1,84 @@
+{
+  "launch": {
+    "prompt": "cartoon rocket launch whoosh, retro arcade video game sound effect, punchy",
+    "duration": 1
+  },
+  "explosion": {
+    "prompt": "big cartoon explosion boom, retro arcade video game sound effect, punchy",
+    "duration": 2
+  },
+  "jump": {
+    "prompt": "classic 8-bit video game jump sound, retro arcade, bouncy and upbeat",
+    "duration": 1
+  },
+  "bounce": {
+    "prompt": "gooey bouncing superball sound, squishy and springy, retro arcade video game, playful",
+    "duration": 1
+  },
+  "thud": {
+    "prompt": "heavy cartoon thud impact, retro arcade video game sound effect",
+    "duration": 1
+  },
+  "splash": {
+    "prompt": "cartoon water splash sound, retro arcade video game, playful",
+    "duration": 1
+  },
+  "pickup": {
+    "prompt": "cheerful video game coin pickup chime, retro arcade, bright and happy",
+    "duration": 2
+  },
+  "swing": {
+    "prompt": "quick cartoon sword swing whoosh, retro arcade video game sound effect",
+    "duration": 1
+  },
+  "dig": {
+    "prompt": "cartoon digging into dirt sound, retro arcade video game, crunchy",
+    "duration": 1
+  },
+  "build": {
+    "prompt": "cartoon construction hammer bang, retro arcade video game sound effect, upbeat",
+    "duration": 1
+  },
+  "warp": {
+    "prompt": "sci-fi teleport warp sound, retro arcade video game, rising then falling pitch",
+    "duration": 2
+  },
+  "siren": {
+    "prompt": "cartoon alarm siren, retro arcade video game sound effect, urgent",
+    "duration": 2
+  },
+  "turnStart": {
+    "prompt": "clear bright video game turn notification chime, retro arcade, two distinct upbeat notes",
+    "duration": 2
+  },
+  "tick": {
+    "prompt": "short digital video game UI click, retro arcade, minimal",
+    "duration": 1
+  },
+  "death": {
+    "prompt": "comedic video game death sound, oof human sound",
+    "duration": 2
+  },
+  "hallelujah": {
+    "prompt": "hallelujah sound, angels singing in choir, very melodic",
+    "duration": 2
+  },
+  "victory": {
+    "prompt": "triumphant video game victory fanfare, retro arcade, bright and cheerful",
+    "duration": 2
+  },
+  "toss": {
+    "prompt": "cartoon item underhand toss whoosh, retro arcade video game sound effect, light and quick",
+    "duration": 1
+  },
+  "gunshot": {
+    "prompt": "retro arcade video game gunshot, punchy single shot, 8-bit",
+    "duration": 1,
+    "trim": 0.22
+  },
+  "bulletImpact": {
+    "prompt": "small sharp bullet impact spark, retro arcade video game sound effect",
+    "duration": 1,
+    "trim": 0.18
+  }
+}

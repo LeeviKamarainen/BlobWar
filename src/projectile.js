@@ -39,7 +39,12 @@ export class Projectile {
     this.trail.frustumCulled = false;
     game.scene.add(this.trail);
 
-    if (!opts.silent) game.audio.launch();
+    if (!opts.silent) {
+      if (weapon.category === 'gun') game.audio.gunshot();
+      else if (weapon.category === 'throw') game.audio.toss();
+      else game.audio.launch();
+    }
+    if (weapon.chant) game.audio.hallelujah();
   }
 
   update(dt) {
@@ -94,7 +99,9 @@ export class Projectile {
 
     for (const blob of this.game.blobs) {
       if (!blob.alive) continue;
-      if (blob === this.owner && this.age < 0.14) continue;
+      // A dropped weapon (dynamite) sits right at the owner's feet for its
+      // whole fuse — only the timer should ever end it, not brushing its owner.
+      if (blob === this.owner && (this.age < 0.14 || w.delivery === 'drop')) continue;
       if (blob.position.distanceTo(this.position) < CFG.blob.radius + w.scale) {
         this.explode();
         return;
@@ -151,7 +158,14 @@ export class Projectile {
     this.destroy();
 
     if (w.radius > 0) {
-      this.game.detonate(at, w.radius, w.damage, this.owner, w.name);
+      // A bullet finding a target isn't an explosion - skip the boom and play
+      // a small sharp impact instead.
+      if (w.category === 'gun') {
+        this.game.audio.bulletImpact();
+        this.game.detonate(at, w.radius, w.damage, this.owner, w.name, { silentBoom: true });
+      } else {
+        this.game.detonate(at, w.radius, w.damage, this.owner, w.name);
+      }
     }
 
     if (w.children) {

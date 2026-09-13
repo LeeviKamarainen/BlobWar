@@ -3,3 +3,6 @@ dist/
 .vite/
 *.local
 .DS_Store
+
+# vendored external tool (multi-GB venv + model weight cache) - not part of the game
+tools/audio-gen/vendor/

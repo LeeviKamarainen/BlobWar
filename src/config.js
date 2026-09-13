@@ -61,6 +61,9 @@ export const CFG = {
   wind: {
     max: 7,
   },
+  practice: {
+    fireCooldown: 1,          // seconds before the range lets you fire again
+  },
   crates: {
     chance: 0.5,             // probability of a drop at the start of a turn
     max: 6,                  // crates allowed on the map at once

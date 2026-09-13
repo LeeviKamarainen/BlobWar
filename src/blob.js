@@ -95,6 +95,7 @@ export class Blob {
     if (this.grounded) {
       this.walk(dt, ground);
     } else {
+      this.walking = false;
       v.y -= CFG.physics.gravity * dt;
       const drag = Math.max(0, 1 - CFG.physics.airDrag * dt);
       v.x *= drag;
@@ -235,6 +236,7 @@ export class Blob {
     this.alive = false;
     this.pendingDeath = false;
     this.group.visible = false;
+    this.walking = false;
     if (explode) {
       this.game.detonate(this.position.clone(), 5.5, 22, this, 'a dying blob');
     }
@@ -244,8 +246,15 @@ export class Blob {
   // --- presentation ---------------------------------------------------------
 
   updateVisual(dt) {
+    const prevWobble = this.wobble;
     this.wobble += dt * (this.walking ? 13 : 3.2);
     this.squash += (1 - this.squash) * Math.min(1, dt * 9);
+
+    // A footfall each time the bob cycle hits the ground (bob back to 0),
+    // so the sound stays locked to the animation instead of a separate timer.
+    if (this.walking && Math.floor(this.wobble / Math.PI) !== Math.floor(prevWobble / Math.PI)) {
+      this.game.audio.footstep();
+    }
 
     const bob = this.walking ? Math.abs(Math.sin(this.wobble)) * 0.16 : 0;
     const breathe = Math.sin(this.wobble * 0.9) * 0.035;
