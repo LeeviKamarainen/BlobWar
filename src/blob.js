@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { CFG } from './config.js';
+import { makeSoftDot } from './fx.js';
 
 const R = CFG.blob.radius;
+// One shared soft-shadow texture for every blob's contact-shadow decal.
+const shadowTex = makeSoftDot();
 
 /**
  * A blob: the little gelatinous soldier you take turns launching explosives at.
@@ -29,9 +32,18 @@ export class Blob {
     this.moveInput = new THREE.Vector2();
     this.wobble = Math.random() * 10;
     this.squash = 1;
+    // Tracks how far the blob has actually moved each frame so the body can
+    // roll like a ball instead of just sliding — see rollGroup below.
+    this._prevPos = this.position.clone();
 
     this.group = new THREE.Group();
     this.group.position.copy(this.position);
+
+    // Body, band and eyes live in their own sub-group so the whole face
+    // tumbles with the body as it rolls forward. Only the label is a direct
+    // child of `group`, staying upright and legible above the roll.
+    this.rollGroup = new THREE.Group();
+    this.group.add(this.rollGroup);
 
     const bodyGeo = new THREE.IcosahedronGeometry(R, 3);
     this.bodyMat = new THREE.MeshStandardMaterial({
@@ -40,10 +52,25 @@ export class Blob {
       metalness: 0.05,
       flatShading: false,
     });
+    // A cheap fresnel rim light so the bodies pop at the edges instead of
+    // reading as a flat sphere, independent of the JS-driven flash/active
+    // pulse below (which still drives the real `emissive` uniform).
+    this.bodyMat.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <opaque_fragment>',
+        /* glsl */ `
+        {
+          vec3 viewDir = normalize( vViewPosition );
+          float rim = pow( 1.0 - saturate( dot( normal, viewDir ) ), 2.4 );
+          outgoingLight += rim * vec3( 0.85, 0.92, 1.0 ) * 0.55;
+        }
+        #include <opaque_fragment>`
+      );
+    };
     this.body = new THREE.Mesh(bodyGeo, this.bodyMat);
     this.body.castShadow = true;
     this.body.receiveShadow = true;
-    this.group.add(this.body);
+    this.rollGroup.add(this.body);
 
     // Face: two eyes with pupils, pointing along +Z of the group.
     const eyeGeo = new THREE.SphereGeometry(R * 0.3, 14, 12);
@@ -58,7 +85,7 @@ export class Blob {
       pupil.position.set(sx * R * 0.42, R * 0.28, R * 0.96);
       this.eyes.add(eye, pupil);
     }
-    this.group.add(this.eyes);
+    this.rollGroup.add(this.eyes);
 
     // A little band of team colour so blobs read at a distance.
     const bandGeo = new THREE.TorusGeometry(R * 0.95, R * 0.1, 8, 24);
@@ -66,12 +93,27 @@ export class Blob {
     this.band = new THREE.Mesh(bandGeo, bandMat);
     this.band.rotation.x = Math.PI / 2;
     this.band.position.y = -R * 0.25;
-    this.group.add(this.band);
+    this.rollGroup.add(this.band);
 
     this.label = makeLabel(team.css);
     this.label.position.y = R + 1.35;
     this.group.add(this.label);
     this.drawLabel();
+
+    // Soft contact-shadow decal on the ground, separate from the group since
+    // it needs to sit flush on the terrain regardless of the body's bob/roll.
+    this.shadowDecal = new THREE.Mesh(
+      new THREE.CircleGeometry(R * 1.25, 20),
+      new THREE.MeshBasicMaterial({
+        map: shadowTex,
+        color: 0x000000,
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false,
+      })
+    );
+    this.shadowDecal.rotation.x = -Math.PI / 2;
+    this.game.scene.add(this.shadowDecal);
   }
 
   get isActive() {
@@ -236,6 +278,7 @@ export class Blob {
     this.alive = false;
     this.pendingDeath = false;
     this.group.visible = false;
+    this.shadowDecal.visible = false;
     this.walking = false;
     if (explode) {
       this.game.detonate(this.position.clone(), 5.5, 22, this, 'a dying blob');
@@ -266,6 +309,27 @@ export class Blob {
     this.group.rotation.y += angleDelta(this.group.rotation.y, this.facing) * Math.min(1, dt * 10);
     this.body.scale.set(sxz, sy, sxz);
     this.band.scale.set(sxz, sxz, sy);
+
+    // Roll the body/band forward around the local X axis as ground is
+    // covered — a gentler multiple of true rolling-without-slipping (which
+    // would be dist/R) so it reads as a tumbling blob instead of a wheel.
+    const dx = this.position.x - this._prevPos.x;
+    const dz = this.position.z - this._prevPos.z;
+    this._prevPos.copy(this.position);
+    const rollDist = Math.min(Math.hypot(dx, dz), R * 2.5);
+    if (rollDist > 1e-5) {
+      this.rollGroup.rotation.x = (this.rollGroup.rotation.x + rollDist / (R * 3)) % (Math.PI * 2);
+    }
+
+    // Soft contact shadow: flush on the terrain under the blob, shrinking
+    // and fading with height so it also reads as a crude "how high up am I"
+    // cue while airborne.
+    const ground = this.game.terrain.heightAt(this.position.x, this.position.z);
+    const airHeight = Math.max(0, this.position.y - R - ground);
+    this.shadowDecal.position.set(this.position.x, ground + 0.05, this.position.z);
+    const decalScale = Math.max(0.35, Math.min(1, 1 - airHeight / 14));
+    this.shadowDecal.scale.setScalar(decalScale);
+    this.shadowDecal.material.opacity = 0.4 * decalScale;
 
     if (this.flash > 0) {
       this.flash -= dt;
@@ -317,6 +381,9 @@ export class Blob {
     this.band.geometry.dispose();
     this.label.material.map.dispose();
     this.label.material.dispose();
+    this.game.scene.remove(this.shadowDecal);
+    this.shadowDecal.geometry.dispose();
+    this.shadowDecal.material.dispose();
   }
 }
 

@@ -1,4 +1,10 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { CFG } from './config.js';
 import { Game } from './game.js';
 import { COL } from './terrain.js';
@@ -9,6 +15,10 @@ import { Net } from './net.js';
 import { Menu } from './menu.js';
 import { Minimap } from './minimap.js';
 import { PRACTICE_MAP } from './maps.js';
+
+// Rough device-capability guess: fewer/cheaper post passes on phones and
+// low-core machines so bloom+SMAA don't tank the frame rate there.
+const LOW_END = /Mobi|Android/i.test(navigator.userAgent) || (navigator.hardwareConcurrency || 8) <= 4;
 
 // --- renderer ---------------------------------------------------------------
 
@@ -39,6 +49,7 @@ const sky = new THREE.Mesh(
       top: { value: new THREE.Color(0x2f6fd0) },
       middle: { value: new THREE.Color(0x8fc0f0) },
       bottom: { value: new THREE.Color(0xf2e3c6) },
+      time: { value: 0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vPos;
@@ -49,9 +60,40 @@ const sky = new THREE.Mesh(
     fragmentShader: /* glsl */ `
       varying vec3 vPos;
       uniform vec3 top, middle, bottom;
+      uniform float time;
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float valueNoise(vec2 p) {
+        vec2 i = floor(p), f = fract(p);
+        float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+      }
+      float cloudFbm(vec2 p) {
+        float v = 0.0, amp = 0.5;
+        for (int i = 0; i < 4; i++) {
+          v += amp * valueNoise(p);
+          p *= 2.05;
+          amp *= 0.5;
+        }
+        return v;
+      }
+
       void main() {
-        float h = normalize(vPos).y;
+        vec3 dir = normalize(vPos);
+        float h = dir.y;
         vec3 c = h > 0.0 ? mix(middle, top, pow(h, 0.7)) : mix(middle, bottom, pow(-h, 0.5));
+
+        if (h > 0.015) {
+          vec2 cloudUv = dir.xz / max(h, 0.06) * 0.22 + vec2(time * 0.006, time * 0.0035);
+          float clouds = cloudFbm(cloudUv);
+          clouds = smoothstep(0.52, 0.82, clouds) * smoothstep(0.015, 0.22, h);
+          c = mix(c, vec3(1.0, 0.99, 0.97), clouds * 0.8);
+        }
+
         gl_FragColor = vec4(c, 1.0);
       }`,
   })
@@ -81,6 +123,13 @@ sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.02;
 scene.add(sun, sun.target);
 
+// Cool fill light from the opposite side so shadowed faces on the flat-shaded
+// geometry don't go fully flat and black — no shadow casting, it's just there
+// to lift the dark side a touch.
+const fill = new THREE.DirectionalLight(0x9fc7ff, 0.32);
+fill.position.set(-80, 55, -70);
+scene.add(fill);
+
 scene.add(new THREE.AmbientLight(0xffffff, 0.1));
 
 // --- ocean ------------------------------------------------------------------
@@ -88,17 +137,37 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.1));
 const waterGeo = new THREE.PlaneGeometry(1800, 1800, 90, 90);
 waterGeo.rotateX(-Math.PI / 2);
 const waterBase = Float32Array.from(waterGeo.attributes.position.array);
-const water = new THREE.Mesh(
-  waterGeo,
-  new THREE.MeshStandardMaterial({
-    color: 0x2b7fbf,
-    transparent: true,
-    opacity: 0.82,
-    roughness: 0.18,
-    metalness: 0.25,
-    flatShading: true,
-  })
-);
+const waterMat = new THREE.MeshStandardMaterial({
+  color: 0x2b7fbf,
+  transparent: true,
+  opacity: 0.82,
+  roughness: 0.18,
+  metalness: 0.25,
+  flatShading: true,
+  normalMap: makeRippleNormalTexture(),
+  normalScale: new THREE.Vector2(0.22, 0.22),
+});
+waterMat.normalMap.wrapS = waterMat.normalMap.wrapT = THREE.RepeatWrapping;
+waterMat.normalMap.repeat.set(30, 30);
+
+// Grazing-angle fresnel: the water reads as opaque and a little brighter at
+// shallow viewing angles (looking across it) and stays translucent looking
+// straight down, instead of one flat opacity everywhere.
+waterMat.onBeforeCompile = (shader) => {
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <opaque_fragment>',
+    /* glsl */ `
+    {
+      vec3 viewDir = normalize( vViewPosition );
+      float fresnel = pow( 1.0 - saturate( dot( normal, viewDir ) ), 3.0 );
+      diffuseColor.a = mix( diffuseColor.a, 1.0, fresnel * 0.65 );
+      outgoingLight += fresnel * vec3( 0.35, 0.45, 0.5 );
+    }
+    #include <opaque_fragment>`
+  );
+};
+
+const water = new THREE.Mesh(waterGeo, waterMat);
 water.position.y = CFG.terrain.waterLevel;
 water.receiveShadow = true;
 scene.add(water);
@@ -151,6 +220,7 @@ function animateWater(t) {
   // Sudden death raises the sea, so the plane tracks the config value.
   water.position.y += (CFG.terrain.waterLevel - water.position.y) * 0.06;
   farWater.position.y = water.position.y;
+  waterMat.normalMap.offset.set(t * 0.018, t * 0.012);
   const pos = waterGeo.attributes.position;
   const arr = pos.array;
   for (let i = 0; i < arr.length; i += 3) {
@@ -165,6 +235,83 @@ function animateWater(t) {
   waterGeo.computeVertexNormals();
 }
 
+function makeRippleNormalTexture() {
+  // A small tileable "bump" texture standing in for real water normal data:
+  // each texel gets a random flat-ish normal (mostly +Z, nudged in x/y) so
+  // MeshStandardMaterial's normalMap picks up fine ripples the vertex
+  // displacement is too coarse to carry, without needing an asset file.
+  const size = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  for (let i = 0; i < size * size; i++) {
+    const nx = (Math.random() - 0.5) * 0.5;
+    const ny = (Math.random() - 0.5) * 0.5;
+    const nz = Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny));
+    img.data[i * 4] = (nx * 0.5 + 0.5) * 255;
+    img.data[i * 4 + 1] = (ny * 0.5 + 0.5) * 255;
+    img.data[i * 4 + 2] = nz * 255;
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return new THREE.CanvasTexture(c);
+}
+
+// --- post-processing ---------------------------------------------------------
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+const bloomRes = new THREE.Vector2(window.innerWidth, window.innerHeight).multiplyScalar(LOW_END ? 0.5 : 1);
+const bloomPass = new UnrealBloomPass(bloomRes, 0.55, 0.4, 0.86);
+composer.addPass(bloomPass);
+
+// Chromatic-aberration + vignette "punch" pulsed briefly on big hits (see
+// postFX.punch below), decaying back to nothing every frame.
+const punchPass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, amount: { value: 0 } },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float amount;
+    varying vec2 vUv;
+    void main() {
+      vec2 dir = vUv - 0.5;
+      float dist = length(dir);
+      vec2 offset = dir * amount * 0.018;
+      float r = texture2D(tDiffuse, vUv - offset).r;
+      float g = texture2D(tDiffuse, vUv).g;
+      float b = texture2D(tDiffuse, vUv + offset).b;
+      float vig = 1.0 - smoothstep(0.35, 0.95, dist) * amount * 0.5;
+      gl_FragColor = vec4(vec3(r, g, b) * vig, 1.0);
+    }`,
+});
+composer.addPass(punchPass);
+
+if (!LOW_END) {
+  const smaaPass = new SMAAPass();
+  composer.addPass(smaaPass);
+}
+composer.addPass(new OutputPass());
+
+let punchAmount = 0;
+const postFX = {
+  /** A brief chromatic-aberration/vignette kick, e.g. on a big explosion. */
+  punch(amount) {
+    punchAmount = Math.min(1.3, punchAmount + amount);
+  },
+  update(dt) {
+    punchAmount = Math.max(0, punchAmount - dt * 2.6);
+    punchPass.uniforms.amount.value = punchAmount;
+  },
+};
+
 // --- wiring -----------------------------------------------------------------
 
 const hud = new HUD();
@@ -172,6 +319,7 @@ const audio = new Audio();
 const input = new Input(renderer.domElement);
 const game = new Game({ scene, camera, hud, audio, input });
 game.minimap = new Minimap({ game, scene, renderer });
+game.postFX = postFX;
 const net = new Net();
 
 const menu = new Menu({
@@ -246,6 +394,8 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
+  composer.setPixelRatio(renderer.getPixelRatio());
 });
 
 // Keep audio alive after tab switches.
@@ -263,6 +413,8 @@ function frame() {
 
   game.update(dt, elapsed);
   animateWater(elapsed);
+  postFX.update(dt);
+  sky.material.uniforms.time.value = elapsed;
 
   // Keep the shadow frustum centred on the action.
   sun.target.position.copy(game.rig ? game.rig.target : scene.position);
@@ -270,13 +422,15 @@ function frame() {
   sun.target.updateMatrixWorld();
 
   // The full map's 3D mode renders the same scene from a camera orbiting high
-  // above the island, in place of the play camera, not alongside it.
+  // above the island, in place of the play camera, not alongside it. It
+  // bypasses the composer — bloom/SMAA aren't worth the cost on a rarely-open
+  // orbit view.
   if (game.minimap.renders3D()) {
     sky.position.copy(game.minimap.camera.position);
     game.minimap.render3D();
   } else {
     sky.position.copy(camera.position);
-    renderer.render(scene, camera);
+    composer.render();
   }
 }
 

@@ -39,9 +39,12 @@ export class FX {
   // --- explosions -----------------------------------------------------------
 
   explosion(pos, radius) {
-    // Flash core.
+    // Flash core. Colour goes well above 1.0 — the renderer keeps HDR values
+    // through the post-processing chain, so this is what the bloom pass
+    // actually latches onto to give the flash a real glow instead of just a
+    // flat bright disc.
     const flashMat = new THREE.MeshBasicMaterial({
-      color: 0xffa53a,
+      color: new THREE.Color(0xffa53a).multiplyScalar(2.4),
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
@@ -52,7 +55,7 @@ export class FX {
 
     // Ground shockwave ring.
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xffd9a0,
+      color: new THREE.Color(0xffd9a0).multiplyScalar(1.8),
       transparent: true,
       side: THREE.DoubleSide,
       depthWrite: false,
@@ -84,7 +87,7 @@ export class FX {
     this.burst(pos, Math.round(28 + radius * 5), {
       speed: radius * 2.6,
       size: 0.55,
-      color: 0xffb347,
+      color: new THREE.Color(0xffb347).multiplyScalar(1.8),
       gravity: 26,
       life: 1.5,
     });
@@ -257,7 +260,7 @@ export class FX {
   }
 }
 
-function makeSoftDot() {
+export function makeSoftDot() {
   const c = document.createElement('canvas');
   c.width = c.height = 64;
   const ctx = c.getContext('2d');

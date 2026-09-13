@@ -1790,6 +1790,7 @@ export class Game {
 
     const camDist = this.camera.position.distanceTo(pos);
     this.rig?.addShake(clamp((radius * 12) / Math.max(8, camDist), 0.1, 1.8));
+    this.postFX?.punch(clamp((radius * 6) / Math.max(8, camDist), 0.08, 1.1));
     this.lastBlast = pos.clone();
 
     for (const blob of this.blobs) {

@@ -40,6 +40,7 @@ export class Terrain {
       flatShading: true,
       roughness: 0.95,
       metalness: 0,
+      map: sharedDetailTexture(),
     });
 
     this.mesh = new THREE.Mesh(this.geometry, this.material);
@@ -415,6 +416,38 @@ export class Terrain {
 }
 
 const _tmpN = new THREE.Vector3();
+
+// A subtle mottled detail texture, multiplied over the vertex-coloured
+// terrain so the flat-shaded biome bands aren't perfectly flat colour up
+// close. Built once from the same noise the terrain itself uses, and shared
+// across every Terrain instance (a new one is built per match).
+let _detailTex = null;
+function sharedDetailTexture() {
+  if (_detailTex) return _detailTex;
+  const size = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const noise = createNoise2D(1337);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const n = fbm(noise, x * 0.045, y * 0.045, 4) * 0.5 + 0.5;
+      const v = Math.round(198 + n * 57); // stays light: a modulation, not a shadow
+      const idx = (y * size + x) * 4;
+      img.data[idx] = v;
+      img.data[idx + 1] = v;
+      img.data[idx + 2] = v;
+      img.data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  _detailTex = new THREE.CanvasTexture(c);
+  _detailTex.wrapS = _detailTex.wrapT = THREE.RepeatWrapping;
+  _detailTex.repeat.set(46, 46);
+  _detailTex.colorSpace = THREE.SRGBColorSpace;
+  return _detailTex;
+}
 
 export const COL = {
   deep: [0.34, 0.29, 0.21],
