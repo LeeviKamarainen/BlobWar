@@ -316,6 +316,11 @@ const postFX = {
 
 const hud = new HUD();
 const audio = new Audio();
+// ?mute=1 forces sound off from the start — for automated/background testing
+// (e.g. a browser-driven agent poking at the app) where SFX would otherwise
+// play out loud on the developer's machine. resume() still runs normally
+// (autoplay-gesture bookkeeping), it just never produces audible output.
+if (new URLSearchParams(window.location.search).has('mute')) audio.setEnabled(false);
 const input = new Input(renderer.domElement);
 const game = new Game({ scene, camera, hud, audio, input });
 game.minimap = new Minimap({ game, scene, renderer });

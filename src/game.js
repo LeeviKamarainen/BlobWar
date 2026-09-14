@@ -106,6 +106,7 @@ export class Game {
     this.previewImpact = null;
     this.rng = new RNG(1);
     this.poseTimer = 0;
+    this.teamSyncTimer = 0;
     this.acc = 0;
     this.wasAiming = false;
     this.aiming = false;
@@ -584,6 +585,8 @@ export class Game {
       this.spawnCrate(cmd.type, cmd.loot, new THREE.Vector3(cmd.x, cmd.y, cmd.z));
       return;
     }
+    // Team-less like 'crate': it's a roster of blob ids, not one team's action.
+    if (cmd.t === 'teamSync') return void this.applyTeamSync(cmd);
     const team = this.teams[cmd.team];
     if (!team) return;
     if (cmd.t === 'switch') return void this.applySwitchCommand(team, cmd);
@@ -651,6 +654,30 @@ export class Game {
       p: round2(this.power),
       c: this.charging ? 1 : 0,
     };
+  }
+
+  /** Real-time: periodic anti-drift roster of every blob on the local player's
+   *  own team, positions only — see the send site in step(). */
+  captureTeamSync() {
+    return {
+      t: 'teamSync',
+      blobs: this.myTeam.blobs
+        .filter((b) => b.alive)
+        .map((b) => ({
+          i: b.id,
+          x: round2(b.position.x),
+          y: round2(b.position.y),
+          z: round2(b.position.z),
+        })),
+    };
+  }
+
+  /** Real-time: adopt a remote team's periodic position roster, see captureTeamSync(). */
+  applyTeamSync(cmd) {
+    for (const b of cmd.blobs) {
+      const blob = this.blobs[b.i];
+      if (blob && blob.alive) blob.netPose = { x: b.x, y: b.y, z: b.z };
+    }
   }
 
   // --- weapon selection -----------------------------------------------------
@@ -872,6 +899,13 @@ export class Game {
         break;
       }
     }
+    // The outgoing blob keeps whatever moveInput readMovement() last wrote —
+    // stop it here, since nothing else will while it's not the active blob,
+    // and only the active blob's pose gets streamed to other clients (so an
+    // unstopped blob would keep walking, and can even die, locally while
+    // sitting frozen in place on everyone else's screen).
+    this.activeBlob?.moveInput.set(0, 0);
+
     this.cursor[team.index] = idx;
     const blob = team.blobs[idx];
     this.activeBlob = blob;
@@ -2041,6 +2075,20 @@ export class Game {
       if (this.poseTimer <= 0) {
         this.poseTimer = 1 / 15;
         this.net.sendPose(this.capturePose());
+      }
+    }
+
+    // The pose stream above only ever covers the one blob currently under
+    // control — a bystander teammate (dug out from under and left falling,
+    // say) never gets published otherwise, and would sit frozen on other
+    // clients until switched to. A slow anti-drift heartbeat closes that gap
+    // without fighting the 15 Hz stream: position only, so it's purely a
+    // fresh lerp target and never a source of truth for health/death.
+    if (this.realtime && this.net && this.myTeam) {
+      this.teamSyncTimer -= dt;
+      if (this.teamSyncTimer <= 0) {
+        this.teamSyncTimer = 4;
+        this.net.sendCommand(this.captureTeamSync());
       }
     }
   }

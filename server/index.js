@@ -19,7 +19,7 @@ import { CONTROL_DIM, CUSTOM_MAP_ID } from '../src/customMap.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 const MAX_TEAMS = 4;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no easily-confused glyphs
 
