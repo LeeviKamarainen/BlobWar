@@ -32,6 +32,7 @@ export class Menu {
     this.teamCount = CFG.defaultTeamCount;
     this.opponents = 'ai';
     this.realtime = false;
+    this.scarcity = CFG.realtimeScarcity.enabled;
     this.mapId = DEFAULT_MAP;
     this.gravityId = CFG.defaultGravityPreset;
     this.disabledWeapons = new Set();
@@ -146,6 +147,15 @@ export class Menu {
           <button data-v="turns" class="${!this.realtime ? 'on' : ''}">Turns</button>
           <button data-v="realtime" class="${this.realtime ? 'on' : ''}">Real-Time</button>
         </div>
+        ${
+          this.realtime
+            ? `<label>Loadout</label>
+        <div class="seg" id="segLoadout">
+          <button data-v="scarce" class="${this.scarcity ? 'on' : ''}">Scarce</button>
+          <button data-v="full" class="${!this.scarcity ? 'on' : ''}">Full</button>
+        </div>`
+            : ''
+        }
         <label>Opponents</label>
         <div class="seg" id="segOpp">
           <button data-v="ai" class="${this.opponents === 'ai' ? 'on' : ''}">Computer</button>
@@ -174,7 +184,9 @@ export class Menu {
           ? `${this.teamCount} human squads taking turns on this keyboard.`
           : `You against ${this.teamCount - 1} computer squad${this.teamCount > 2 ? 's' : ''}.`;
       const pace = this.realtime
-        ? ' Real-time: everybody moves and fires at once, no waiting your turn.'
+        ? this.scarcity
+          ? ' Real-time, scarce: you start with a bare arsenal — hunt crates for the rest.'
+          : ' Real-time: everybody moves and fires at once, no waiting your turn.'
         : '';
       this.$('#localNote').textContent = `${note} ${blobs} blobs each.${pace}`;
     };
@@ -187,6 +199,10 @@ export class Menu {
       // Real-time is simultaneous input on one keyboard — that only works
       // solo vs the computer, so Hotseat isn't an option once it's on.
       if (this.realtime) this.opponents = 'ai';
+      this.render();
+    });
+    this.segWire('#segLoadout', (v) => {
+      this.scarcity = v === 'scarce';
       this.render();
     });
     this.segWire('#segOpp', (v) => {
@@ -212,6 +228,7 @@ export class Menu {
         weapons: this.enabledWeaponList(),
         customMap: this.mapId === CUSTOM_MAP_ID ? loadCustomMap() : null,
         realtime: this.realtime,
+        scarcity: this.scarcity,
       });
     };
   }
@@ -230,6 +247,15 @@ export class Menu {
           <button data-v="turns" class="${!this.realtime ? 'on' : ''}">Turns</button>
           <button data-v="realtime" class="${this.realtime ? 'on' : ''}">Real-Time</button>
         </div>
+        ${
+          this.realtime
+            ? `<label>Loadout</label>
+        <div class="seg" id="segLoadout">
+          <button data-v="scarce" class="${this.scarcity ? 'on' : ''}">Scarce</button>
+          <button data-v="full" class="${!this.scarcity ? 'on' : ''}">Full</button>
+        </div>`
+            : ''
+        }
         <label>Room code</label>
         <input id="code" maxlength="4" placeholder="ABCD" style="text-transform:uppercase" />
         <label>Map</label>
@@ -255,6 +281,10 @@ export class Menu {
     });
     this.segWire('#segPace', (v) => {
       this.realtime = v === 'realtime';
+      this.render();
+    });
+    this.segWire('#segLoadout', (v) => {
+      this.scarcity = v === 'scarce';
       this.render();
     });
     this.wireMapGrid('#segMap');
@@ -284,6 +314,7 @@ export class Menu {
         weapons: this.enabledWeaponList(),
         customMap: this.mapId === CUSTOM_MAP_ID ? loadCustomMap() : null,
         realtime: this.realtime,
+        scarcity: this.scarcity,
       });
       if (!res?.ok) return this.err(res?.error || 'Could not create the room.');
       this.show('lobby');

@@ -61,6 +61,15 @@ export const CFG = {
     realtimeSuddenDeathAt: 240,  // seconds before the sea starts rising
     realtimeCrateInterval: 9,    // seconds between supply-drop rolls
   },
+  // Real-time's default starting arsenal: a couple of basics with a hard ammo
+  // cap apiece, so a match opens with players digging in and chasing crates
+  // instead of unloading everything at once. Turn-based matches are
+  // unaffected — see startingAmmo() vs scarceAmmo() in weapons.js. Configurable
+  // per match from the lobby (Loadout: Scarce/Full); this is just the default.
+  realtimeScarcity: {
+    enabled: true,
+    loadout: { bazooka: 3, grenade: 2, uzi: 1 },
+  },
   wind: {
     max: 7,
   },

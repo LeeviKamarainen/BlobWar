@@ -26,6 +26,8 @@
  *   internal   spawned by other weapons; never shown in the inventory
  */
 
+import { CFG } from './config.js';
+
 export const CATEGORIES = [
   { id: 'launch', name: 'Launchers' },
   { id: 'throw', name: 'Throwables' },
@@ -312,6 +314,24 @@ export const WEAPONS = {
     wind: 0,
     noCharge: true,
     retreat: 0,
+    hitName: 'a baseball bat',
+  },
+  punch: {
+    id: 'punch',
+    name: 'Punch',
+    icon: '👊',
+    category: 'tool',
+    desc: 'Free, short reach, never runs out. Barely a shove.',
+    ammo: Infinity,
+    delivery: 'melee',
+    range: 3,
+    damage: 10,
+    radius: 0,
+    launchSpeed: 11,
+    wind: 0,
+    noCharge: true,
+    retreat: 0,
+    hitName: 'a punch',
   },
   teleport: {
     id: 'teleport',
@@ -473,6 +493,18 @@ export function startingAmmo(enabledIds = null) {
     const allowed = !enabledIds || CORE_WEAPONS.includes(id) || enabledIds.has(id);
     out[id] = allowed ? WEAPONS[id].ammo : 0;
   }
+  return out;
+}
+
+/**
+ * Real-time's default loadout: a few basics, each capped at a small ammo
+ * count, so a match opens scarce and everything past it has to be found in
+ * crates. `loadout` overrides CFG.realtimeScarcity.loadout (see Game.start's
+ * `scarcity` option, set from the lobby's Loadout toggle).
+ */
+export function scarceAmmo(loadout = CFG.realtimeScarcity.loadout) {
+  const out = {};
+  for (const id of WEAPON_ORDER) out[id] = loadout[id] ?? 0;
   return out;
 }
 

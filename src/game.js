@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CFG } from './config.js';
-import { WEAPONS, WEAPON_ORDER, QUICK_SLOTS, startingAmmo, practiceAmmo } from './weapons.js';
+import { WEAPONS, WEAPON_ORDER, QUICK_SLOTS, startingAmmo, practiceAmmo, scarceAmmo } from './weapons.js';
 import { Terrain } from './terrain.js';
 import { MAPS, DEFAULT_MAP } from './maps.js';
 import { CUSTOM_MAP_ID, customMapDef } from './customMap.js';
@@ -158,6 +158,10 @@ export class Game {
    *                   (null/omitted = every weapon)
    *   realtime     every team's current blob can act simultaneously, all
    *                match — no turn order at all. See runInTeamContext.
+   *   scarcity     real-time only: start with the scarce loadout (see
+   *                scarceAmmo/CFG.realtimeScarcity) instead of the normal
+   *                full one. null/omitted defers to CFG.realtimeScarcity.enabled;
+   *                ignored outside real-time.
    */
   start(opts = {}) {
     const {
@@ -172,11 +176,13 @@ export class Game {
       gravity = CFG.gravityPresets.find((p) => p.id === CFG.defaultGravityPreset).value,
       enabledWeapons = null,
       realtime = false,
+      scarcity = null,
     } = opts;
 
     this.mode = mode;
     this.practice = mode === 'practice';
     this.realtime = realtime && !this.practice;
+    this.scarcity = this.realtime && (scarcity ?? CFG.realtimeScarcity.enabled);
     this.seed = seed;
     this.localTeams = localTeams;
     // An explicit array (even empty — everything turned off but the core two) is
@@ -212,7 +218,11 @@ export class Game {
       index: i,
       label: labels?.[i] ?? null,
       blobs: [],
-      ammo: this.practice ? practiceAmmo() : startingAmmo(this.enabledWeapons),
+      ammo: this.practice
+        ? practiceAmmo()
+        : this.scarcity
+          ? scarceAmmo()
+          : startingAmmo(this.enabledWeapons),
       isAI: aiTeams.includes(i),
       rt: this.realtime ? makeTeamRT() : null,
     }));
@@ -1631,7 +1641,7 @@ export class Game {
       const dist = to.length();
       if (dist > weapon.range) continue;
       if (to.normalize().dot(flat) < 0.25) continue;
-      other.damage(weapon.damage, 'a baseball bat');
+      other.damage(weapon.damage, weapon.hitName);
       const impulse = flat.clone().multiplyScalar(weapon.launchSpeed);
       impulse.y = weapon.launchSpeed * 0.65;
       other.applyImpulse(impulse);

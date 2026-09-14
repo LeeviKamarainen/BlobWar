@@ -44,6 +44,10 @@ function sanitizeWeapons(list) {
   if (!Array.isArray(list)) return null;
   return list.filter((id) => TOGGLEABLE_WEAPONS.has(id));
 }
+/** null means "defer to CFG.realtimeScarcity.enabled" — only a real true/false is kept. */
+function sanitizeScarcity(v) {
+  return typeof v === 'boolean' ? v : null;
+}
 /** The host's hand-painted map, relayed whole so every client builds the
  *  identical terrain — nobody else has it in their own localStorage. */
 function sanitizeCustomMap(cm) {
@@ -89,6 +93,7 @@ function publicRoom(room) {
     gravity: room.gravity,
     weapons: room.weapons,
     realtime: room.realtime,
+    scarcity: room.scarcity,
     // customMap deliberately isn't here: it's tens of KB and only needed once,
     // by the 'start' payload, not on every lobby broadcast.
     players: room.players.map((p) => ({
@@ -142,7 +147,7 @@ io.on('connection', (socket) => {
     me = null;
   };
 
-  socket.on('create', ({ name, teamCount, mapId, gravity, weapons, customMap, realtime }, ack) => {
+  socket.on('create', ({ name, teamCount, mapId, gravity, weapons, customMap, realtime, scarcity }, ack) => {
     const code = makeCode();
     const sanitizedCustomMap = mapId === CUSTOM_MAP_ID ? sanitizeCustomMap(customMap) : null;
     room = {
@@ -154,6 +159,7 @@ io.on('connection', (socket) => {
       weapons: sanitizeWeapons(weapons),
       customMap: sanitizedCustomMap,
       realtime: !!realtime,
+      scarcity: sanitizeScarcity(scarcity),
       players: [],
       started: false,
       hostId: socket.id,
@@ -211,6 +217,7 @@ io.on('connection', (socket) => {
       weapons: room.weapons,
       customMap: room.customMap,
       realtime: room.realtime,
+      scarcity: room.scarcity,
     });
     console.log(`[blobwar] room ${room.code} started with ${room.players.length} players`);
   });
